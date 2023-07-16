@@ -26,6 +26,7 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.2
 	github.com/gdamore/tcell/v2 v2.6.0
 	github.com/go-chi/chi/v5 v5.0.10
+	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/google/uuid v1.3.1
 	github.com/hanwen/go-fuse/v2 v2.3.0
 	github.com/henrybear327/Proton-API-Bridge v0.0.0-20230908065933-5bfa15b567db
@@ -139,6 +140,7 @@ require (
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect
 	github.com/relvacode/iso8601 v1.3.0 // indirect
+	github.com/rogpeppe/go-internal v1.11.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shoenig/go-m1cpu v0.1.6 // indirect
 	github.com/sony/gobreaker v0.5.0 // indirect
