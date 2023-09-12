@@ -472,7 +472,7 @@ rclone serve ftp remote:path [flags]
       --public-ip string                       Public IP address to advertise for passive connections
       --read-only                              Only allow read-only access
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication (default "anonymous")
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)

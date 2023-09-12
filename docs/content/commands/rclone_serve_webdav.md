@@ -602,7 +602,7 @@ rclone serve webdav remote:path [flags]
       --server-write-timeout Duration          Timeout for server writing data (default 1h0m0s)
       --template string                        User-specified template
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)

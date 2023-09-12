@@ -297,6 +297,16 @@ rclone [flags]
       --gcs-token string                                    OAuth Access Token as a JSON blob
       --gcs-token-url string                                Token server url
       --gcs-user-project string                             User project
+      --gitdrive-api-host string                            Api Host
+      --gitdrive-chunk-size SizeSuffix                      Upload chunk size (default 500Mi)
+      --gitdrive-direct-stream                              Direct Stream (default true)
+      --gitdrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
+      --gitdrive-git-token string                           Git Token
+      --gitdrive-media-proxy                                Media Proxy (default true)
+      --gitdrive-proxy string                               Proxy
+      --gitdrive-session-token string                       Session Token Cookie
+      --gitdrive-upload-resume                              Upload Resume (default true)
+      --gitdrive-user string                                User
       --gphotos-auth-url string                             Auth server URL
       --gphotos-client-id string                            OAuth Client Id
       --gphotos-client-secret string                        OAuth Client Secret
@@ -763,6 +773,10 @@ rclone [flags]
       --swift-user-id string                                User ID to log in - optional - most swift systems use user and leave this blank (v3 auth) (OS_USER_ID)
       --syslog                                              Use Syslog for logging
       --syslog-facility string                              Facility for syslog, e.g. KERN,USER,... (default "DAEMON")
+      --teldrive-access-token string                        Access Token Cookie
+      --teldrive-api-host string                            Api Host
+      --teldrive-chunk-size SizeSuffix                      Chunk Size (default 1000Mi)
+      --teldrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
       --temp-dir string                                     Directory rclone will use for temporary files (default "/tmp")
       --timeout Duration                                    IO idle timeout (default 5m0s)
       --tpslimit float                                      Limit HTTP transactions per second to this
@@ -784,7 +798,7 @@ rclone [flags]
       --use-json-log                                        Use json log format
       --use-mmap                                            Use mmap allocator (see docs)
       --use-server-modtime                                  Use server modified time instead of object metadata
-      --user-agent string                                   Set the user-agent to a specified string (default "rclone/v1.64.0")
+      --user-agent string                                   Set the user-agent to a specified string (default "rclone/v1.64.0-beta.7356.1a92b76f4.main")
   -v, --verbose count                                       Print lots more stuff (repeat for more)
   -V, --version                                             Print the version number
       --webdav-bearer-token string                          Bearer token instead of user/pass (e.g. a Macaroon)

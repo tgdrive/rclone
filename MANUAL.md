@@ -1,6 +1,6 @@
 % rclone(1) User Manual
 % Nick Craig-Wood
-% Sep 11, 2023
+% Sep 12, 2023
 
 # Rclone syncs your files to cloud storage
 
@@ -4454,10 +4454,6 @@ Run without a hash to see the list of all supported hashes, e.g.
       * whirlpool
       * crc32
       * sha256
-      * dropbox
-      * hidrive
-      * mailru
-      * quickxor
 
 Then
 
@@ -5791,7 +5787,7 @@ rclone mount remote:path /path/to/mountpoint [flags]
       --poll-interval Duration                 Time to wait between polling for changes, must be smaller than dir-cache-time and only on supported remotes (set 0 to disable) (default 1m0s)
       --read-only                              Only allow read-only access
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
       --vfs-cache-min-free-space SizeSuffix    Target minimum free space on the disk containing the cache (default off)
@@ -7032,7 +7028,7 @@ rclone serve dlna remote:path [flags]
       --poll-interval Duration                 Time to wait between polling for changes, must be smaller than dir-cache-time and only on supported remotes (set 0 to disable) (default 1m0s)
       --read-only                              Only allow read-only access
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
       --vfs-cache-min-free-space SizeSuffix    Target minimum free space on the disk containing the cache (default off)
@@ -7505,7 +7501,7 @@ rclone serve docker [flags]
       --socket-addr string                     Address <host:port> or absolute path (default: /run/docker/plugins/rclone.sock)
       --socket-gid int                         GID for unix socket (default: current process GID) (default 1000)
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
       --vfs-cache-min-free-space SizeSuffix    Target minimum free space on the disk containing the cache (default off)
@@ -8026,7 +8022,7 @@ rclone serve ftp remote:path [flags]
       --public-ip string                       Public IP address to advertise for passive connections
       --read-only                              Only allow read-only access
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication (default "anonymous")
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -8645,7 +8641,7 @@ rclone serve http remote:path [flags]
       --server-write-timeout Duration          Timeout for server writing data (default 1h0m0s)
       --template string                        User-specified template
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -9396,7 +9392,7 @@ rclone serve sftp remote:path [flags]
       --read-only                              Only allow read-only access
       --stdio                                  Run an sftp server on stdin/stdout
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -10046,7 +10042,7 @@ rclone serve webdav remote:path [flags]
       --server-write-timeout Duration          Timeout for server writing data (default 1h0m0s)
       --template string                        User-specified template
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -15840,7 +15836,7 @@ This takes the following parameters
 - ignoreListingChecksum - Do not use checksums for listings
 - resilient - Allow future runs to retry after certain less-serious errors, instead of requiring resync. 
             Use at your own risk!
-- workdir - server directory for history files (default: /home/ncw/.cache/rclone/bisync)
+- workdir - server directory for history files (default: /home/codespace/.cache/rclone/bisync)
 - noCleanup - retain working files
 
 See [bisync command help](https://rclone.org/commands/rclone_bisync/)
@@ -16938,7 +16934,7 @@ General networking and HTTP stuff.
       --tpslimit float                     Limit HTTP transactions per second to this
       --tpslimit-burst int                 Max burst of transactions for --tpslimit (default 1)
       --use-cookies                        Enable session cookiejar
-      --user-agent string                  Set the user-agent to a specified string (default "rclone/v1.64.0")
+      --user-agent string                  Set the user-agent to a specified string (default "rclone/v1.64.0-beta.7356.1a92b76f4.main")
 ```
 
 
@@ -17345,6 +17341,16 @@ Backend only flags. These can be set in the config file also.
       --gcs-token string                                    OAuth Access Token as a JSON blob
       --gcs-token-url string                                Token server url
       --gcs-user-project string                             User project
+      --gitdrive-api-host string                            Api Host
+      --gitdrive-chunk-size SizeSuffix                      Upload chunk size (default 500Mi)
+      --gitdrive-direct-stream                              Direct Stream (default true)
+      --gitdrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
+      --gitdrive-git-token string                           Git Token
+      --gitdrive-media-proxy                                Media Proxy (default true)
+      --gitdrive-proxy string                               Proxy
+      --gitdrive-session-token string                       Session Token Cookie
+      --gitdrive-upload-resume                              Upload Resume (default true)
+      --gitdrive-user string                                User
       --gphotos-auth-url string                             Auth server URL
       --gphotos-client-id string                            OAuth Client Id
       --gphotos-client-secret string                        OAuth Client Secret
@@ -17706,6 +17712,10 @@ Backend only flags. These can be set in the config file also.
       --swift-tenant-id string                              Tenant ID - optional for v1 auth, this or tenant required otherwise (OS_TENANT_ID)
       --swift-user string                                   User name to log in (OS_USERNAME)
       --swift-user-id string                                User ID to log in - optional - most swift systems use user and leave this blank (v3 auth) (OS_USER_ID)
+      --teldrive-access-token string                        Access Token Cookie
+      --teldrive-api-host string                            Api Host
+      --teldrive-chunk-size SizeSuffix                      Chunk Size (default 1000Mi)
+      --teldrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
       --union-action-policy string                          Policy to choose upstream on ACTION category (default "epall")
       --union-cache-time int                                Cache time of usage and free space (in seconds) (default 120)
       --union-create-policy string                          Policy to choose upstream on CREATE category (default "epmfs")

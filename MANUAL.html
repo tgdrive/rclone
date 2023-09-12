@@ -6,82 +6,81 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <meta name="author" content="Nick Craig-Wood" />
   <title>rclone(1) User Manual</title>
-  <style>
-    code{white-space: pre-wrap;}
-    span.smallcaps{font-variant: small-caps;}
-    span.underline{text-decoration: underline;}
-    div.column{display: inline-block; vertical-align: top; width: 50%;}
-    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
-    ul.task-list{list-style: none;}
-    pre > code.sourceCode { white-space: pre; position: relative; }
-    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
-    pre > code.sourceCode > span:empty { height: 1.2em; }
-    code.sourceCode > span { color: inherit; text-decoration: inherit; }
-    div.sourceCode { margin: 1em 0; }
-    pre.sourceCode { margin: 0; }
-    @media screen {
-    div.sourceCode { overflow: auto; }
-    }
-    @media print {
-    pre > code.sourceCode { white-space: pre-wrap; }
-    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
-    }
-    pre.numberSource code
-      { counter-reset: source-line 0; }
-    pre.numberSource code > span
-      { position: relative; left: -4em; counter-increment: source-line; }
-    pre.numberSource code > span > a:first-child::before
-      { content: counter(source-line);
-        position: relative; left: -1em; text-align: right; vertical-align: baseline;
-        border: none; display: inline-block;
-        -webkit-touch-callout: none; -webkit-user-select: none;
-        -khtml-user-select: none; -moz-user-select: none;
-        -ms-user-select: none; user-select: none;
-        padding: 0 4px; width: 4em;
-        color: #aaaaaa;
-      }
-    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
-    div.sourceCode
-      {   }
-    @media screen {
-    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
-    }
-    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
-    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
-    code span.at { color: #7d9029; } /* Attribute */
-    code span.bn { color: #40a070; } /* BaseN */
-    code span.bu { } /* BuiltIn */
-    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
-    code span.ch { color: #4070a0; } /* Char */
-    code span.cn { color: #880000; } /* Constant */
-    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
-    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
-    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
-    code span.dt { color: #902000; } /* DataType */
-    code span.dv { color: #40a070; } /* DecVal */
-    code span.er { color: #ff0000; font-weight: bold; } /* Error */
-    code span.ex { } /* Extension */
-    code span.fl { color: #40a070; } /* Float */
-    code span.fu { color: #06287e; } /* Function */
-    code span.im { } /* Import */
-    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
-    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
-    code span.op { color: #666666; } /* Operator */
-    code span.ot { color: #007020; } /* Other */
-    code span.pp { color: #bc7a00; } /* Preprocessor */
-    code span.sc { color: #4070a0; } /* SpecialChar */
-    code span.ss { color: #bb6688; } /* SpecialString */
-    code span.st { color: #4070a0; } /* String */
-    code span.va { color: #19177c; } /* Variable */
-    code span.vs { color: #4070a0; } /* VerbatimString */
-    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  <style type="text/css">
+      code{white-space: pre-wrap;}
+      span.smallcaps{font-variant: small-caps;}
+      span.underline{text-decoration: underline;}
+      div.column{display: inline-block; vertical-align: top; width: 50%;}
+  </style>
+  <style type="text/css">
+a.sourceLine { display: inline-block; line-height: 1.25; }
+a.sourceLine { pointer-events: none; color: inherit; text-decoration: inherit; }
+a.sourceLine:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode { white-space: pre; position: relative; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+code.sourceCode { white-space: pre-wrap; }
+a.sourceLine { text-indent: -1em; padding-left: 1em; }
+}
+pre.numberSource a.sourceLine
+  { position: relative; left: -4em; }
+pre.numberSource a.sourceLine::before
+  { content: attr(title);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; pointer-events: all; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+    color: #aaaaaa;
+  }
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+div.sourceCode
+  {  }
+@media screen {
+a.sourceLine::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+code span.at { color: #7d9029; } /* Attribute */
+code span.bn { color: #40a070; } /* BaseN */
+code span.bu { } /* BuiltIn */
+code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+code span.ch { color: #4070a0; } /* Char */
+code span.cn { color: #880000; } /* Constant */
+code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+code span.dt { color: #902000; } /* DataType */
+code span.dv { color: #40a070; } /* DecVal */
+code span.er { color: #ff0000; font-weight: bold; } /* Error */
+code span.ex { } /* Extension */
+code span.fl { color: #40a070; } /* Float */
+code span.fu { color: #06287e; } /* Function */
+code span.im { } /* Import */
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+code span.op { color: #666666; } /* Operator */
+code span.ot { color: #007020; } /* Other */
+code span.pp { color: #bc7a00; } /* Preprocessor */
+code span.sc { color: #4070a0; } /* SpecialChar */
+code span.ss { color: #bb6688; } /* SpecialString */
+code span.st { color: #4070a0; } /* String */
+code span.va { color: #19177c; } /* Variable */
+code span.vs { color: #4070a0; } /* VerbatimString */
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
   </style>
 </head>
 <body>
 <header id="title-block-header">
 <h1 class="title">rclone(1) User Manual</h1>
 <p class="author">Nick Craig-Wood</p>
-<p class="date">Sep 11, 2023</p>
+<p class="date">Sep 12, 2023</p>
 </header>
 <h1 id="rclone-syncs-your-files-to-cloud-storage">Rclone syncs your files to cloud storage</h1>
 <p><img width="50%" src="https://rclone.org/img/logo_on_light__horizontal_color.svg" alt="rclone logo" style="float:right; padding: 5px;" ></p>
@@ -352,7 +351,7 @@ rclone v1.49.1
 <li><p>You need to mount the host rclone config dir at <code>/config/rclone</code> into the Docker container. Due to the fact that rclone updates tokens inside its config file, and that the update process involves a file rename, you need to mount the whole host rclone config dir, not just the single host rclone config file.</p></li>
 <li><p>You need to mount a host data dir at <code>/data</code> into the Docker container.</p></li>
 <li><p>By default, the rclone binary inside a Docker container runs with UID=0 (root). As a result, all files created in a run will have UID=0. If your config and data files reside on the host with a non-root UID:GID, you need to pass these on the container start command line.</p></li>
-<li><p>If you want to access the RC interface (either via the API or the Web UI), it is required to set the <code>--rc-addr</code> to <code>:5572</code> in order to connect to it from outside the container. An explanation about why this is necessary is present <a href="https://web.archive.org/web/20200808071950/https://pythonspeed.com/articles/docker-connection-refused/">here</a>.</p>
+<li>If you want to access the RC interface (either via the API or the Web UI), it is required to set the <code>--rc-addr</code> to <code>:5572</code> in order to connect to it from outside the container. An explanation about why this is necessary is present <a href="https://web.archive.org/web/20200808071950/https://pythonspeed.com/articles/docker-connection-refused/">here</a>.
 <ul>
 <li>NOTE: Users running this container with the docker network set to <code>host</code> should probably set it to listen to localhost only, with <code>127.0.0.1:5572</code> as the value for <code>--rc-addr</code></li>
 </ul></li>
@@ -392,7 +391,7 @@ kill %1</code></pre>
 <h2 id="snap">Snap installation</h2>
 <p><a href="https://snapcraft.io/rclone"><img src="https://snapcraft.io/static/images/badges/en/snap-store-black.svg" alt="Get it from the Snap Store" /></a></p>
 <p>Make sure you have <a href="https://snapcraft.io/docs/installing-snapd">Snapd installed</a></p>
-<div class="sourceCode" id="cb22"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true"></a>$ <span class="fu">sudo</span> snap install rclone</span></code></pre></div>
+<div class="sourceCode" id="cb22"><pre class="sourceCode bash"><code class="sourceCode bash"><a class="sourceLine" id="cb22-1" title="1">$ <span class="fu">sudo</span> snap install rclone</a></code></pre></div>
 <p>Due to the strict confinement of Snap, rclone snap cannot acess real /home/$USER/.config/rclone directory, default config path is as below.</p>
 <ul>
 <li>Default config directory:
@@ -976,9 +975,9 @@ rclone --dry-run --min-size 100M delete remote:path</code></pre>
 <p>The <code>--combined</code> flag will write a file (or stdout) which contains all file paths with a symbol and then a space and then the path to tell you what happened to it. These are reminiscent of diff files.</p>
 <ul>
 <li><code>= path</code> means path was found in source and destination and was identical</li>
-<li>`- path` means path was missing on the source, so only in the destination</li>
-<li>`+ path` means path was missing on the destination, so only in the source</li>
-<li>`* path` means path was present in source and destination but different.</li>
+<li><code>- path</code> means path was missing on the source, so only in the destination</li>
+<li><code>+ path</code> means path was missing on the destination, so only in the source</li>
+<li><code>* path</code> means path was present in source and destination but different.</li>
 <li><code>! path</code> means there was an error reading or hashing the source or dest.</li>
 </ul>
 <p>The default number of parallel checks is 8. See the <a href="https://rclone.org/docs/#checkers-n">--checkers=N</a> option for more information.</p>
@@ -1738,9 +1737,9 @@ rclone backend help &lt;backendname&gt;</code></pre>
 <p>The <code>--combined</code> flag will write a file (or stdout) which contains all file paths with a symbol and then a space and then the path to tell you what happened to it. These are reminiscent of diff files.</p>
 <ul>
 <li><code>= path</code> means path was found in source and destination and was identical</li>
-<li>`- path` means path was missing on the source, so only in the destination</li>
-<li>`+ path` means path was missing on the destination, so only in the source</li>
-<li>`* path` means path was present in source and destination but different.</li>
+<li><code>- path</code> means path was missing on the source, so only in the destination</li>
+<li><code>+ path</code> means path was missing on the destination, so only in the source</li>
+<li><code>* path</code> means path was present in source and destination but different.</li>
 <li><code>! path</code> means there was an error reading or hashing the source or dest.</li>
 </ul>
 <p>The default number of parallel checks is 8. See the <a href="https://rclone.org/docs/#checkers-n">--checkers=N</a> option for more information.</p>
@@ -2299,9 +2298,9 @@ if src is directory
 <p>The <code>--combined</code> flag will write a file (or stdout) which contains all file paths with a symbol and then a space and then the path to tell you what happened to it. These are reminiscent of diff files.</p>
 <ul>
 <li><code>= path</code> means path was found in source and destination and was identical</li>
-<li>`- path` means path was missing on the source, so only in the destination</li>
-<li>`+ path` means path was missing on the destination, so only in the source</li>
-<li>`* path` means path was present in source and destination but different.</li>
+<li><code>- path</code> means path was missing on the source, so only in the destination</li>
+<li><code>+ path</code> means path was missing on the destination, so only in the source</li>
+<li><code>* path</code> means path was present in source and destination but different.</li>
 <li><code>! path</code> means there was an error reading or hashing the source or dest.</li>
 </ul>
 <p>The default number of parallel checks is 8. See the <a href="https://rclone.org/docs/#checkers-n">--checkers=N</a> option for more information.</p>
@@ -2481,11 +2480,7 @@ Supported hashes are:
   * sha1
   * whirlpool
   * crc32
-  * sha256
-  * dropbox
-  * hidrive
-  * mailru
-  * quickxor</code></pre>
+  * sha256</code></pre>
 <p>Then</p>
 <pre><code>$ rclone hashsum MD5 remote:path</code></pre>
 <p>Note that hash names are case insensitive and values are output in lower case.</p>
@@ -3062,7 +3057,7 @@ WantedBy=multi-user.target</code></pre>
       --poll-interval Duration                 Time to wait between polling for changes, must be smaller than dir-cache-time and only on supported remotes (set 0 to disable) (default 1m0s)
       --read-only                              Only allow read-only access
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
       --vfs-cache-min-free-space SizeSuffix    Target minimum free space on the disk containing the cache (default off)
@@ -3713,7 +3708,7 @@ htpasswd -B htpasswd anotherUser</code></pre>
       --poll-interval Duration                 Time to wait between polling for changes, must be smaller than dir-cache-time and only on supported remotes (set 0 to disable) (default 1m0s)
       --read-only                              Only allow read-only access
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
       --vfs-cache-min-free-space SizeSuffix    Target minimum free space on the disk containing the cache (default off)
@@ -3921,7 +3916,7 @@ htpasswd -B htpasswd anotherUser</code></pre>
       --socket-addr string                     Address &lt;host:port&gt; or absolute path (default: /run/docker/plugins/rclone.sock)
       --socket-gid int                         GID for unix socket (default: current process GID) (default 1000)
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
       --vfs-cache-min-free-space SizeSuffix    Target minimum free space on the disk containing the cache (default off)
@@ -4145,7 +4140,7 @@ htpasswd -B htpasswd anotherUser</code></pre>
       --public-ip string                       Public IP address to advertise for passive connections
       --read-only                              Only allow read-only access
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication (default &quot;anonymous&quot;)
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -4478,7 +4473,7 @@ htpasswd -B htpasswd anotherUser</code></pre>
       --server-write-timeout Duration          Timeout for server writing data (default 1h0m0s)
       --template string                        User-specified template
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -4802,7 +4797,7 @@ htpasswd -B htpasswd anotherUser</code></pre>
       --read-only                              Only allow read-only access
       --stdio                                  Run an sftp server on stdin/stdout
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -5143,7 +5138,7 @@ htpasswd -B htpasswd anotherUser</code></pre>
       --server-write-timeout Duration          Timeout for server writing data (default 1h0m0s)
       --template string                        User-specified template
       --uid uint32                             Override the uid field set by the filesystem (not supported on Windows) (default 1000)
-      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 2)
+      --umask int                              Override the permission bits set by the filesystem (not supported on Windows) (default 18)
       --user string                            User name for authentication
       --vfs-cache-max-age Duration             Max time since last access of objects in the cache (default 1h0m0s)
       --vfs-cache-max-size SizeSuffix          Max total size of objects in the cache (default off)
@@ -8178,7 +8173,7 @@ rclone rc options/set --json &#39;{&quot;main&quot;: {&quot;LogLevel&quot;: 8}}&
 <li>filtersFile - read filtering patterns from a file</li>
 <li>ignoreListingChecksum - Do not use checksums for listings</li>
 <li>resilient - Allow future runs to retry after certain less-serious errors, instead of requiring resync. Use at your own risk!</li>
-<li>workdir - server directory for history files (default: /home/ncw/.cache/rclone/bisync)</li>
+<li>workdir - server directory for history files (default: /home/codespace/.cache/rclone/bisync)</li>
 <li>noCleanup - retain working files</li>
 </ul>
 <p>See <a href="https://rclone.org/commands/rclone_bisync/">bisync command help</a> and <a href="https://rclone.org/bisync/">full bisync description</a> for more information.</p>
@@ -10050,7 +10045,7 @@ Showing nodes accounting for 1537.03kB, 100% of 1537.03kB total
       --tpslimit float                     Limit HTTP transactions per second to this
       --tpslimit-burst int                 Max burst of transactions for --tpslimit (default 1)
       --use-cookies                        Enable session cookiejar
-      --user-agent string                  Set the user-agent to a specified string (default &quot;rclone/v1.64.0&quot;)</code></pre>
+      --user-agent string                  Set the user-agent to a specified string (default &quot;rclone/v1.64.0-beta.7356.1a92b76f4.main&quot;)</code></pre>
 <h2 id="performance">Performance</h2>
 <p>Flags helpful for increasing performance.</p>
 <pre><code>      --buffer-size SizeSuffix   In memory buffer size when reading files for each --transfer (default 16Mi)
@@ -10403,6 +10398,16 @@ Showing nodes accounting for 1537.03kB, 100% of 1537.03kB total
       --gcs-token string                                    OAuth Access Token as a JSON blob
       --gcs-token-url string                                Token server url
       --gcs-user-project string                             User project
+      --gitdrive-api-host string                            Api Host
+      --gitdrive-chunk-size SizeSuffix                      Upload chunk size (default 500Mi)
+      --gitdrive-direct-stream                              Direct Stream (default true)
+      --gitdrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
+      --gitdrive-git-token string                           Git Token
+      --gitdrive-media-proxy                                Media Proxy (default true)
+      --gitdrive-proxy string                               Proxy
+      --gitdrive-session-token string                       Session Token Cookie
+      --gitdrive-upload-resume                              Upload Resume (default true)
+      --gitdrive-user string                                User
       --gphotos-auth-url string                             Auth server URL
       --gphotos-client-id string                            OAuth Client Id
       --gphotos-client-secret string                        OAuth Client Secret
@@ -10764,6 +10769,10 @@ Showing nodes accounting for 1537.03kB, 100% of 1537.03kB total
       --swift-tenant-id string                              Tenant ID - optional for v1 auth, this or tenant required otherwise (OS_TENANT_ID)
       --swift-user string                                   User name to log in (OS_USERNAME)
       --swift-user-id string                                User ID to log in - optional - most swift systems use user and leave this blank (v3 auth) (OS_USER_ID)
+      --teldrive-access-token string                        Access Token Cookie
+      --teldrive-api-host string                            Api Host
+      --teldrive-chunk-size SizeSuffix                      Chunk Size (default 1000Mi)
+      --teldrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
       --union-action-policy string                          Policy to choose upstream on ACTION category (default &quot;epall&quot;)
       --union-cache-time int                                Cache time of usage and free space (in seconds) (default 120)
       --union-create-policy string                          Policy to choose upstream on CREATE category (default &quot;epmfs&quot;)
@@ -11329,7 +11338,7 @@ rclone copy Path2 Path1 --create-empty-src-dirs</code></pre>
 <ol type="1">
 <li>Begin with excluding directory trees:
 <ul>
-<li>e.g. `- /AppData/`</li>
+<li>e.g. <code>- /AppData/</code></li>
 <li><code>**</code> on the end is not necessary. Once a given directory level is excluded then everything beneath it won't be looked at by rclone.</li>
 <li>Exclude such directories that are unneeded, are big, dynamically thrashed, or where there may be access permission issues.</li>
 <li>Excluding such dirs first will make rclone operations (much) faster.</li>
@@ -11342,17 +11351,17 @@ rclone copy Path2 Path1 --create-empty-src-dirs</code></pre>
 </ul></li>
 <li>Include select directories:
 <ul>
-<li>Add lines like: `+ /Documents/PersonalFiles/**` to select which directories to include in the sync.</li>
+<li>Add lines like: <code>+ /Documents/PersonalFiles/**</code> to select which directories to include in the sync.</li>
 <li><code>**</code> on the end specifies to include the full depth of the specified tree.</li>
-<li>With Include-style filters, files at the Path1/Path2 root are not included. They may be included with `+ /*`.</li>
+<li>With Include-style filters, files at the Path1/Path2 root are not included. They may be included with <code>+ /*</code>.</li>
 <li>Place RCLONE_TEST files within these included directory trees. They will only be looked for in these directory trees.</li>
-<li>Finish by excluding everything else by adding `- **` at the end of the filters file.</li>
+<li>Finish by excluding everything else by adding <code>- **</code> at the end of the filters file.</li>
 <li>Disregard step 4.</li>
 </ul></li>
 <li>Exclude select directories:
 <ul>
-<li>Add more lines like in step 1. For example: <code>-/Desktop/tempfiles/</code>, or `- /testdir/<code>.    Again, a</code>**` on the end is not necessary.</li>
-<li>Do <em>not</em> add a `- **` in the file. Without this line, everything will be included that has not been explicitly excluded.</li>
+<li>Add more lines like in step 1. For example: <code>-/Desktop/tempfiles/</code>, or <code>- /testdir/</code>. Again, a <code>**</code> on the end is not necessary.</li>
+<li>Do <em>not</em> add a <code>- **</code> in the file. Without this line, everything will be included that has not been explicitly excluded.</li>
 <li>Disregard step 3.</li>
 </ul></li>
 </ol>
@@ -11369,11 +11378,11 @@ rclone copy Path2 Path1 --create-empty-src-dirs</code></pre>
 <h3 id="include-filters">Example include-style filters for Windows user directories</h3>
 <p>This Windows <em>include-style</em> example is based on the sync root (Path1) set to <code>C:\Users\MyLogin</code>. The strategy is to select specific directories to be synched with a network drive (Path2).</p>
 <ul>
-<li>`- /AppData/` excludes an entire tree of Windows stored stuff that need not be synched. In my case, AppData has &gt;11 GB of stuff I don't care about, and there are some subdirectories beneath AppData that are not accessible to my user login, resulting in bisync critical aborts.</li>
+<li><code>- /AppData/</code> excludes an entire tree of Windows stored stuff that need not be synched. In my case, AppData has &gt;11 GB of stuff I don't care about, and there are some subdirectories beneath AppData that are not accessible to my user login, resulting in bisync critical aborts.</li>
 <li>Windows creates cache files starting with both upper and lowercase <code>NTUSER</code> at <code>C:\Users\MyLogin</code>. These files may be dynamic, locked, and are generally <em>don't care</em>.</li>
-<li>There are just a few directories with <em>my</em> data that I do want synched, in the form of `+ /<path><code>. By selecting only the directory trees I   want to avoid the dozen plus directories that various apps make   at</code>C:`.</li>
-<li>Include files in the root of the sync point, <code>C:\Users\MyLogin</code>, by adding the `+ /*` line.</li>
-<li>This is an Include-style filters file, therefore it ends with `- **` which excludes everything not explicitly included.</li>
+<li>There are just a few directories with <em>my</em> data that I do want synched, in the form of <code>+ /&lt;path&gt;</code>. By selecting only the directory trees I want to avoid the dozen plus directories that various apps make at <code>C:\Users\MyLogin\Documents</code>.</li>
+<li>Include files in the root of the sync point, <code>C:\Users\MyLogin</code>, by adding the <code>+ /*</code> line.</li>
+<li>This is an Include-style filters file, therefore it ends with <code>- **</code> which excludes everything not explicitly included.</li>
 </ul>
 <pre><code>- /AppData/
 - NTUSER*
@@ -11389,8 +11398,8 @@ rclone copy Path2 Path1 --create-empty-src-dirs</code></pre>
 <p>Note also that Windows implements several "library" links such as <code>C:\Users\MyLogin\My Documents\My Music</code> pointing to <code>C:\Users\MyLogin\Music</code>. rclone sees these as links, so you must add <code>--links</code> to the bisync command line if you which to follow these links. I find that I get permission errors in trying to follow the links, so I don't include the rclone <code>--links</code> flag, but then you get lots of <code>Can't follow symlink…</code> noise from rclone about not following the links. This noise can be quashed by adding <code>--quiet</code> to the bisync command line.</p>
 <h2 id="exclude-filters">Example exclude-style filters files for use with Dropbox</h2>
 <ul>
-<li>Dropbox disallows synching the listed temporary and configuration/data files. The `- <filename>` filters exclude these files where ever they may occur in the sync tree. Consider adding similar exclusions for file types you don't need to sync, such as core dump and software build files.</li>
-<li>bisync testing creates <code>/testdir/</code> at the top level of the sync tree, and usually deletes the tree after the test. If a normal sync should run while the <code>/testdir/</code> tree exists the <code>--check-access</code> phase may fail due to unbalanced RCLONE_TEST files. The `- /testdir/` filter blocks this tree from being synched. You don't need this exclusion if you are not doing bisync development testing.</li>
+<li>Dropbox disallows synching the listed temporary and configuration/data files. The <code>- &lt;filename&gt;</code> filters exclude these files where ever they may occur in the sync tree. Consider adding similar exclusions for file types you don't need to sync, such as core dump and software build files.</li>
+<li>bisync testing creates <code>/testdir/</code> at the top level of the sync tree, and usually deletes the tree after the test. If a normal sync should run while the <code>/testdir/</code> tree exists the <code>--check-access</code> phase may fail due to unbalanced RCLONE_TEST files. The <code>- /testdir/</code> filter blocks this tree from being synched. You don't need this exclusion if you are not doing bisync development testing.</li>
 <li>Everything else beneath the Path1/Path2 root will be synched.</li>
 <li>RCLONE_TEST files may be placed anywhere within the tree, including the root.</li>
 </ul>
@@ -11568,7 +11577,7 @@ Options:
 <li>The remote test sync tree is located at a temporary directory under <code>&lt;remote:&gt;/bisync.XXX/</code>.</li>
 <li><code>path1</code> and/or <code>path2</code> subdirectories are created in a temporary directory under the respective local or cloud test remote.</li>
 <li>By default, the Path1 and Path2 test dirs and workdir will be deleted after each test run. The <code>-no-cleanup</code> flag disables purging these directories when validating and debugging a given test. These directories will be flushed before running another test, independent of the <code>-no-cleanup</code> usage.</li>
-<li>You will likely want to add `- /testdir/<code>to your normal   bisync</code>--filters-file<code>so that normal syncs do not attempt to sync   the test temporary directories, which may have</code>RCLONE_TEST<code>miscompares   in some testcases which would otherwise trip the</code>--check-access<code>system.   The</code>--check-access<code>mechanism is hard-coded to ignore</code>RCLONE_TEST<code>files beneath</code>bisync/testdata`, so the test cases may reside on the synched tree even if there are check file mismatches in the test tree.</li>
+<li>You will likely want to add <code>- /testdir/</code> to your normal bisync <code>--filters-file</code> so that normal syncs do not attempt to sync the test temporary directories, which may have <code>RCLONE_TEST</code> miscompares in some testcases which would otherwise trip the <code>--check-access</code> system. The <code>--check-access</code> mechanism is hard-coded to ignore <code>RCLONE_TEST</code> files beneath <code>bisync/testdata</code>, so the test cases may reside on the synched tree even if there are check file mismatches in the test tree.</li>
 <li>Some Dropbox tests can fail, notably printing the following message: <code>src and dst identical but can't set mod time without deleting and re-uploading</code> This is expected and happens due to the way Dropbox handles modification times. You should use the <code>-refresh-times</code> test flag to make up for this.</li>
 <li>If Dropbox tests hit request limit for you and print error message <code>too_many_requests/...: Too many requests or write operations.</code> then follow the <a href="https://rclone.org/dropbox/#get-your-own-dropbox-app-id">Dropbox App ID instructions</a>.</li>
 </ul>
@@ -18153,7 +18162,7 @@ cos                  s3</code></pre>
 <p>For Netease NOS configure as per the configurator <code>rclone config</code> setting the provider <code>Netease</code>. This will automatically set <code>force_path_style = false</code> which is necessary for it to run properly.</p>
 <h3 id="petabox">Petabox</h3>
 <p>Here is an example of making a <a href="https://petabox.io/">Petabox</a> configuration. First run:</p>
-<div class="sourceCode" id="cb875"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb875-1"><a href="#cb875-1" aria-hidden="true"></a><span class="ex">rclone</span> config</span></code></pre></div>
+<div class="sourceCode" id="cb875"><pre class="sourceCode bash"><code class="sourceCode bash"><a class="sourceLine" id="cb875-1" title="1"><span class="ex">rclone</span> config</a></code></pre></div>
 <p>This will guide you through an interactive setup process.</p>
 <pre><code>No remotes found, make a new one?
 n) New remote

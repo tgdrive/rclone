@@ -111,7 +111,7 @@ General networking and HTTP stuff.
       --tpslimit float                     Limit HTTP transactions per second to this
       --tpslimit-burst int                 Max burst of transactions for --tpslimit (default 1)
       --use-cookies                        Enable session cookiejar
-      --user-agent string                  Set the user-agent to a specified string (default "rclone/v1.64.0")
+      --user-agent string                  Set the user-agent to a specified string (default "rclone/v1.64.0-beta.7356.1a92b76f4.main")
 ```
 
 
@@ -518,6 +518,16 @@ Backend only flags. These can be set in the config file also.
       --gcs-token string                                    OAuth Access Token as a JSON blob
       --gcs-token-url string                                Token server url
       --gcs-user-project string                             User project
+      --gitdrive-api-host string                            Api Host
+      --gitdrive-chunk-size SizeSuffix                      Upload chunk size (default 500Mi)
+      --gitdrive-direct-stream                              Direct Stream (default true)
+      --gitdrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
+      --gitdrive-git-token string                           Git Token
+      --gitdrive-media-proxy                                Media Proxy (default true)
+      --gitdrive-proxy string                               Proxy
+      --gitdrive-session-token string                       Session Token Cookie
+      --gitdrive-upload-resume                              Upload Resume (default true)
+      --gitdrive-user string                                User
       --gphotos-auth-url string                             Auth server URL
       --gphotos-client-id string                            OAuth Client Id
       --gphotos-client-secret string                        OAuth Client Secret
@@ -879,6 +889,10 @@ Backend only flags. These can be set in the config file also.
       --swift-tenant-id string                              Tenant ID - optional for v1 auth, this or tenant required otherwise (OS_TENANT_ID)
       --swift-user string                                   User name to log in (OS_USERNAME)
       --swift-user-id string                                User ID to log in - optional - most swift systems use user and leave this blank (v3 auth) (OS_USER_ID)
+      --teldrive-access-token string                        Access Token Cookie
+      --teldrive-api-host string                            Api Host
+      --teldrive-chunk-size SizeSuffix                      Chunk Size (default 1000Mi)
+      --teldrive-encoding MultiEncoder                      The encoding for the backend (default Slash,LtGt,DoubleQuote,BackQuote,Del,Ctl,LeftSpace,InvalidUtf8,Dot)
       --union-action-policy string                          Policy to choose upstream on ACTION category (default "epall")
       --union-cache-time int                                Cache time of usage and free space (in seconds) (default 120)
       --union-create-policy string                          Policy to choose upstream on CREATE category (default "epmfs")

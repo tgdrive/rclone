@@ -1708,7 +1708,7 @@ This takes the following parameters
 - ignoreListingChecksum - Do not use checksums for listings
 - resilient - Allow future runs to retry after certain less-serious errors, instead of requiring resync. 
             Use at your own risk!
-- workdir - server directory for history files (default: /home/ncw/.cache/rclone/bisync)
+- workdir - server directory for history files (default: /home/codespace/.cache/rclone/bisync)
 - noCleanup - retain working files
 
 See [bisync command help](https://rclone.org/commands/rclone_bisync/)
