@@ -92,6 +92,7 @@ type Fs struct {
 	features *fs.Features
 	srv      *rest.Client
 	pacer    *fs.Pacer
+	authHash     string
 }
 
 // Object represents an teldrive object
@@ -249,6 +250,27 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	client := fshttp.NewClient(ctx)
 	authCookie := http.Cookie{Name: "user-session", Value: opt.AccessToken}
 	f.srv = rest.NewClient(client).SetRoot(opt.ApiHost).SetCookie(&authCookie)
+
+	opts := rest.Opts{
+		Method: "GET",
+		Path:   "/api/auth/session",
+	}
+
+	var session api.Session
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err := f.srv.CallJSON(ctx, &opts,nil, &session)
+		return shouldRetry(ctx, resp, err)
+	})
+
+	if err != nil {
+		return nil,err
+	}
+
+	if session.Hash =="" {
+		return nil,fmt.Errorf("invalid session token")
+	}
+
+	f.authHash = session.Hash
 
 	return f, nil
 }
@@ -858,6 +880,9 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		Method:  "GET",
 		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, o.name),
 		Options: options,
+		Parameters: url.Values{
+			"hash":          []string{o.fs.authHash},
+		},
 	}
 
 	err = o.fs.pacer.Call(func() (bool, error) {
