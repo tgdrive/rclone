@@ -773,3 +773,5 @@ put them back in again.` >}}
   * Volodymyr Kit <v.kit@maytech.net>
   * David Pedersen <limero@me.com>
   * Drew Stinnett <drew@drewlink.com>
+  * Pat Patterson <pat@backblaze.com>
+  * Herby Gillot <herby.gillot@gmail.com>
