@@ -26,8 +26,8 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.2
 	github.com/gdamore/tcell/v2 v2.6.0
 	github.com/go-chi/chi/v5 v5.0.10
-	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/go-git/go-billy/v5 v5.4.1
+	github.com/gofrs/uuid v4.4.0+incompatible
 	github.com/google/uuid v1.3.1
 	github.com/hanwen/go-fuse/v2 v2.3.0
 	github.com/henrybear327/Proton-API-Bridge v0.0.0-20230908065933-5bfa15b567db

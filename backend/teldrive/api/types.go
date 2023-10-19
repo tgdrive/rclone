@@ -115,7 +115,6 @@ type CreateFileRequest struct {
 	MimeType  string     `json:"mimeType"`
 	Size      int64      `json:"size"`
 	Parts     []FilePart `json:"parts"`
-	ReleaseId int64      `json:"releaseId"`
 	CreatedAt string     `json:"createdAt,omitempty"`
 	UpdatedAt string     `json:"updatedAt,omitempty"`
 }

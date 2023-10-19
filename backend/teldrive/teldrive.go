@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"path"
@@ -92,7 +91,7 @@ type Fs struct {
 	features *fs.Features
 	srv      *rest.Client
 	pacer    *fs.Pacer
-	authHash     string
+	authHash string
 }
 
 // Object represents an teldrive object
@@ -258,16 +257,16 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 
 	var session api.Session
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts,nil, &session)
+		resp, err := f.srv.CallJSON(ctx, &opts, nil, &session)
 		return shouldRetry(ctx, resp, err)
 	})
 
 	if err != nil {
-		return nil,err
+		return nil, err
 	}
 
-	if session.Hash =="" {
-		return nil,fmt.Errorf("invalid session token")
+	if session.Hash == "" {
+		return nil, fmt.Errorf("invalid session token")
 	}
 
 	f.authHash = session.Hash
@@ -504,13 +503,6 @@ func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileIn
 	return err
 }
 
-func int64min(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func MD5(text string) string {
 	algorithm := md5.New()
 	algorithm.Write([]byte(text))
@@ -523,12 +515,11 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	fullBase := f.dirPath(base)
 
 	modTime := src.ModTime(ctx).UTC().Format(timeFormat)
-
-	uploadId := MD5(fmt.Sprintf("%s:%d:%s", path.Join(fullBase, leaf), src.Size(), modTime))
+	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(fullBase, leaf), src.Size(), modTime))
 
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/api/uploads/" + uploadId,
+		Path:   "/api/uploads/" + uploadID,
 	}
 
 	var uploadFile api.UploadFile
@@ -541,7 +532,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		return fmt.Errorf("upload not found: %w", err)
 	}
 
-	var uploadedSize int64 = 0
+	uploadedSize := int64(0)
 
 	if len(uploadFile.Parts) != 0 {
 		for _, part := range uploadFile.Parts {
@@ -549,64 +540,58 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		}
 	}
 
-	if uploadedSize != src.Size() {
+	chunkSize := int64(f.opt.ChunkSize)
 
-		in := bufio.NewReader(in0)
+	// Calculate total parts and chunk size
+	totalParts := src.Size() / chunkSize
 
-		if uploadedSize > 0 {
-			io.CopyN(io.Discard, in, uploadedSize)
+	if src.Size()%chunkSize != 0 {
+		totalParts++
+	}
+
+	// Create a buffered reader
+	in := bufio.NewReader(in0)
+
+	// Skip any previously uploaded data
+	if uploadedSize > 0 {
+		io.CopyN(io.Discard, in, uploadedSize)
+	}
+
+	name := leaf
+
+	// Upload the remaining parts
+	for partNo := len(uploadFile.Parts) + 1; partNo <= int(totalParts); partNo++ {
+		if partNo == int(totalParts) {
+			chunkSize = src.Size() - uploadedSize
+		}
+		partReader := io.LimitReader(in, chunkSize)
+
+		if totalParts > 1 {
+			name = fmt.Sprintf("%s.part.%03d", name, partNo)
+		}
+		
+		opts := rest.Opts{
+			Method:        "POST",
+			Path:          "/api/uploads/" + uploadID,
+			Body:          partReader,
+			ContentLength: &chunkSize,
+			Parameters: url.Values{
+				"fileName":   []string{name},
+				"partNo":     []string{strconv.Itoa(partNo)},
+				"totalparts": []string{strconv.FormatInt(totalParts, 10)},
+			},
 		}
 
-		left := src.Size() - uploadedSize
-
-		partNo := 1
-
-		if len(uploadFile.Parts) > 0 {
-			partNo = len(uploadFile.Parts) + 1
+		var info api.PartFile
+		err := f.pacer.Call(func() (bool, error) {
+			resp, err := f.srv.CallJSON(ctx, &opts, nil, &info)
+			return shouldRetry(ctx, resp, err)
+		})
+		if err != nil {
+			return err
 		}
-
-		totalParts := int(math.Ceil(float64(src.Size()) / float64(f.opt.ChunkSize)))
-
-		for {
-
-			if _, err := in.Peek(1); err != nil {
-				if left > 0 {
-					return err
-				}
-				break
-			}
-			n := int64(f.opt.ChunkSize)
-			if src.Size() != -1 {
-				n = int64min(left, n)
-				left -= n
-			}
-			partReader := io.LimitReader(in, n)
-
-			name := fmt.Sprintf("%s.part.%03d", leaf, partNo)
-			opts := rest.Opts{
-				Method:        "POST",
-				Path:          "/api/uploads/" + uploadId,
-				Body:          partReader,
-				ContentLength: &n,
-				ContentType:   "application/octet-stream",
-				Parameters: url.Values{
-					"fileName":   []string{name},
-					"partNo":     []string{strconv.Itoa(partNo)},
-					"totalparts": []string{strconv.FormatInt(int64(totalParts), 10)},
-				},
-			}
-
-			var info api.PartFile
-			err := f.pacer.Call(func() (bool, error) {
-				resp, err := f.srv.CallJSON(ctx, &opts, nil, &info)
-				return shouldRetry(ctx, resp, err)
-			})
-			if err != nil {
-				return err
-			}
-			uploadFile.Parts = append(uploadFile.Parts, info)
-			partNo++
-		}
+		uploadedSize += chunkSize
+		uploadFile.Parts = append(uploadFile.Parts, info)
 	}
 
 	if fullBase != "/" {
@@ -644,7 +629,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	}
 	opts = rest.Opts{
 		Method: "DELETE",
-		Path:   "/api/uploads/" + uploadId,
+		Path:   "/api/uploads/" + uploadID,
 	}
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.Call(ctx, &opts)
@@ -653,7 +638,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	if err != nil {
 		return err
 	}
-
+	
 	return nil
 }
 
@@ -881,7 +866,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, o.name),
 		Options: options,
 		Parameters: url.Values{
-			"hash":          []string{o.fs.authHash},
+			"hash": []string{o.fs.authHash},
 		},
 	}
 
