@@ -20,7 +20,6 @@ jobs:
             gotags: cmount
             cgo: '0'
             build_flags: '-include "^(linux/amd64|linux/arm64|linux/arm-v7)"'
-            build_args: '-ldflags "-s -w -extldflags=-static"'
 
           - job_name: windows
             os: windows-latest
@@ -28,7 +27,7 @@ jobs:
             gotags: cmount
             cgo: '0'
             build_flags: '-include "^(windows/amd64|windows/arm64)"'
-            build_args: '-ldflags "-s -w -extldflags=-static" -buildmode exe'
+            build_args: '-buildmode exe'
 
 
     name: ${{ matrix.job_name }}
@@ -53,7 +52,6 @@ jobs:
           echo 'GOTAGS=${{ matrix.gotags }}' >> $GITHUB_ENV
           echo 'BUILD_FLAGS=${{ matrix.build_flags }}' >> $GITHUB_ENV
           echo 'BUILD_ARGS=${{ matrix.build_args }}' >> $GITHUB_ENV
-          if [[ "${{ matrix.goarch }}" != "" ]]; then echo 'GOARCH=${{ matrix.goarch }}' >> $GITHUB_ENV ; fi
           if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
 
       - name: Install Libraries on Linux
@@ -116,19 +114,22 @@ jobs:
 
   release:
    name: Create Release
-    runs-on: ubuntu-latest
-    steps:
+   runs-on: ubuntu-latest
+   needs: build
+   steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - uses: actions/download-artifact@v3
-      with:
-       name: rclone
-       path: ${{ github.workspace }}/build
+        with:
+         name: rclone
+         path: ${{ github.workspace }}/build
 
       - name: Upload Assets
-      shell: bash
-      run: |
-        make upload_github
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+         make upload_github
