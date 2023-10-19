@@ -1,7 +1,7 @@
 name: Publish to Winget
-on:
-  release:
-    types: [released]
+# on:
+#   release:
+#     types: [released]
 
 jobs:
   publish:

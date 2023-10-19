@@ -6,11 +6,11 @@ name: build
 
 # Trigger the workflow on push or pull request
 on:
-  push:
-    branches:
-      - '**'
-    tags:
-      - '**'
+  # push:
+  #   branches:
+  #     - '**'
+  #   tags:
+  #     - '**'
   pull_request:
   workflow_dispatch:
     inputs:
@@ -22,7 +22,7 @@ on:
 
 jobs:
   build:
-    if: ${{ github.event.inputs.manual == 'true' || (github.repository == 'divyam/rclone' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)) }}
+    if: ${{ github.event.inputs.manual == 'true' || (github.repository == 'rclone/rclone' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)) }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -211,23 +211,21 @@ jobs:
           make
           make compile_all
         if: matrix.compile_all
-      
-      - name: Built binaries
+
+      - name: Deploy built binaries
         shell: bash
         run: |
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then make release_dep_linux ; fi
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then make release_dep_windows ; fi
-        if: github.head_ref == '' && github.repository == 'divyam/rclone'
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: rclone
-          path: build/
-
+          make ci_beta
+        env:
+          RCLONE_CONFIG_PASS: ${{ secrets.RCLONE_CONFIG_PASS }}
+        # working-directory: '$(modulePath)'
+        # Deploy binaries if enabled in config && not a PR && not a fork
+        if: env.RCLONE_CONFIG_PASS != '' && matrix.deploy && github.head_ref == '' && github.repository == 'rclone/rclone'
 
   lint:
-    if: ${{ github.event.inputs.manual == 'true' || (github.repository == 'divyam/rclone' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)) }}
+    if: ${{ github.event.inputs.manual == 'true' || (github.repository == 'rclone/rclone' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)) }}
     timeout-minutes: 30
     name: "lint"
     runs-on: ubuntu-latest
@@ -256,7 +254,7 @@ jobs:
         run: govulncheck ./...
 
   android:
-    if: ${{ github.event.inputs.manual == 'true' || (github.repository == 'divyam/rclone' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)) }}
+    if: ${{ github.event.inputs.manual == 'true' || (github.repository == 'rclone/rclone' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name)) }}
     timeout-minutes: 30
     name: "android-all"
     runs-on: ubuntu-latest
@@ -298,7 +296,7 @@ jobs:
           echo "RCLONE_NDK_VERSION=21" >> $GITHUB_ENV
 
       - name: arm-v7a gomobile build
-        run: env PATH=$PATH:~/go/bin gomobile bind -androidapi ${RCLONE_NDK_VERSION} -v -target=android/arm -javapkg=org.rclone -ldflags '-s -X github.com/divyam/rclone/fs.Version='${VERSION} github.com/divyam/rclone/librclone/gomobile
+        run: env PATH=$PATH:~/go/bin gomobile bind -androidapi ${RCLONE_NDK_VERSION} -v -target=android/arm -javapkg=org.rclone -ldflags '-s -X github.com/rclone/rclone/fs.Version='${VERSION} github.com/rclone/rclone/librclone/gomobile
 
       - name: arm-v7a Set environment variables
         shell: bash
@@ -312,7 +310,7 @@ jobs:
           echo 'CGO_LDFLAGS=-fuse-ld=lld -s -w' >> $GITHUB_ENV
 
       - name: arm-v7a build
-        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/divyam/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-armv7a .
+        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/rclone/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-armv7a .
 
       - name: arm64-v8a Set environment variables
         shell: bash
@@ -325,7 +323,7 @@ jobs:
           echo 'CGO_LDFLAGS=-fuse-ld=lld -s -w' >> $GITHUB_ENV
 
       - name: arm64-v8a build
-        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/divyam/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-armv8a .
+        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/rclone/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-armv8a .
 
       - name: x86 Set environment variables
         shell: bash
@@ -338,7 +336,7 @@ jobs:
           echo 'CGO_LDFLAGS=-fuse-ld=lld -s -w' >> $GITHUB_ENV
 
       - name: x86 build
-        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/divyam/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-x86 .
+        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/rclone/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-x86 .
 
       - name: x64 Set environment variables
         shell: bash
@@ -351,12 +349,12 @@ jobs:
           echo 'CGO_LDFLAGS=-fuse-ld=lld -s -w' >> $GITHUB_ENV
 
       - name: x64 build
-        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/divyam/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-x64 .
+        run: go build -v -tags android -trimpath -ldflags '-s -X github.com/rclone/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-x64 .
 
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: rclone
-          path: build/
-
+      - name: Upload artifacts
+        run: |
+          make ci_upload
+        env:
+          RCLONE_CONFIG_PASS: ${{ secrets.RCLONE_CONFIG_PASS }}
+        # Upload artifacts if not a PR && not a fork
+        if: env.RCLONE_CONFIG_PASS != '' && github.head_ref == '' && github.repository == 'rclone/rclone'
