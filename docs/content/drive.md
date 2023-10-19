@@ -124,6 +124,8 @@ use.  This changes what type of token is granted to rclone.  [The
 scopes are defined
 here](https://developers.google.com/drive/v3/web/about-auth).
 
+A comma-separated list is allowed e.g. `drive.readonly,drive.file`.
+
 The scope are
 
 #### drive
@@ -582,7 +584,7 @@ Properties:
 
 #### --drive-scope
 
-Scope that rclone should use when requesting access from drive.
+Comma separated list of scopes that rclone should use when requesting access from drive.
 
 Properties:
 
@@ -772,13 +774,13 @@ Properties:
 
 #### --drive-skip-checksum-gphotos
 
-Skip MD5 checksum on Google photos and videos only.
+Skip checksums on Google photos and videos only.
 
 Use this if you get checksum errors when transferring Google photos or
 videos.
 
 Setting this flag will cause Google photos and videos to return a
-blank MD5 checksum.
+blank checksums.
 
 Google photos are identified by being in the "photos" space.
 
@@ -1525,6 +1527,10 @@ not appear on the directory list sent to rclone when using --fast-list.
 Waiting a moderate period of time between attempts (estimated to be
 approximately 1 hour) and/or not using --fast-list both seem to be
 effective in preventing the problem.
+
+### Hashes
+
+We need to say that all files have MD5 hashes, but a small fraction of files uploaded may not have SHA1 or SHA256 hashes especially if they were uploaded before 2018.
 
 ## Making your own client_id
 
