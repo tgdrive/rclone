@@ -16,3 +16,4 @@ Thumbs.db
 __pycache__
 .vscode
 .DS_Store
+/docs/static/img/logos/
