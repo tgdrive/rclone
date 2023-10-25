@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"path"
@@ -65,12 +64,7 @@ func init() {
 			Name:      "user",
 			Sensitive: true,
 		}, {
-			Help:      "Proxy",
-			Name:      "proxy",
-			Sensitive: true,
-		},{
 			Name:     "media_proxy",
-			Default:  true,
 			Help:     "Media Proxy",
 			Advanced: true,
 		}, {
@@ -82,11 +76,6 @@ func init() {
 			Name:     "upload_resume",
 			Default:  true,
 			Help:     "Upload Resume",
-			Advanced: true,
-		}, {
-			Name:     "direct_stream",
-			Default:  true,
-			Help:     "Direct Stream",
 			Advanced: true,
 		}, {
 
@@ -110,12 +99,11 @@ type Options struct {
 	GitToken     string               `config:"git_token"`
 	Enc          encoder.MultiEncoder `config:"encoding"`
 	User         string               `config:"user"`
-	Proxy        string               `config:"proxy"`
 	SessionToken string               `config:"session_token"`
 	ChunkSize    fs.SizeSuffix        `config:"chunk_size"`
 	UploadResume bool                 `config:"upload_resume"`
 	DirectStream bool                 `config:"direct_stream"`
-	MediaProxy string                `config:"media_proxy"`
+	MediaProxy   string               `config:"media_proxy"`
 }
 
 // Fs is the interface a cloud storage system must provide
@@ -125,7 +113,6 @@ type Fs struct {
 	opt      Options
 	features *fs.Features
 	srv      *rest.Client
-	srvProxy *rest.Client
 	pacer    *fs.Pacer
 }
 
@@ -234,18 +221,6 @@ func (f *Fs) splitPath(pth string) (string, string) {
 	return pth[:i], pth[i+1:]
 }
 
-func getProxyClient(ctx context.Context, opt *Options) *http.Client {
-	t := fshttp.NewTransportCustom(ctx, func(t *http.Transport) {
-		proxyUrl, err := url.Parse(opt.Proxy)
-		if err == nil {
-			t.Proxy = http.ProxyURL(proxyUrl)
-		}
-	})
-	return &http.Client{
-		Transport: t,
-	}
-}
-
 // NewFs makes a new Fs object from the path
 //
 // The path is of the form remote:path
@@ -283,10 +258,6 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	authCookie := http.Cookie{Name: "__Secure-next-auth.session-token", Value: opt.SessionToken}
 	f.srv = rest.NewClient(client).SetRoot(opt.ApiHost).SetCookie(&authCookie)
 
-	if opt.Proxy != "" {
-		f.srvProxy = rest.NewClient(getProxyClient(ctx, opt)).SetRoot(opt.ApiHost).SetCookie(&authCookie)
-	}
-
 	return f, nil
 }
 
@@ -321,7 +292,7 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.
 
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/files",
+		Path:   "/api/files",
 		Parameters: url.Values{
 			"path":          []string{f.opt.Enc.FromStandardPath(path)},
 			"perPage":       []string{strconv.FormatUint(options.PerPage, 10)},
@@ -353,7 +324,7 @@ func (f *Fs) getPathInfo(ctx context.Context, path string) (*api.ReadMetadataRes
 
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/files",
+		Path:   "/api/files",
 		Parameters: url.Values{
 			"path": []string{f.opt.Enc.FromStandardPath(path)},
 			"op":   []string{"find"},
@@ -486,7 +457,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/files/movefiles",
+		Path:   "/api/files/movefiles",
 	}
 
 	mv := api.MoveFileRequest{
@@ -513,7 +484,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileInformation, fileId string) (err error) {
 	opts := rest.Opts{
 		Method: "PATCH",
-		Path:   "/files/" + fileId,
+		Path:   "/api/files/" + fileId,
 	}
 
 	var resp *http.Response
@@ -694,7 +665,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/files",
+		Path:   "/api/files",
 	}
 
 	payload := api.CreateFileRequest{
@@ -808,7 +779,7 @@ func (f *Fs) CreateDir(ctx context.Context, base string, leaf string) (err error
 	var apiErr api.Error
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/files/makedir",
+		Path:   "/api/files/makedir",
 	}
 
 	dir := base
@@ -849,7 +820,7 @@ func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 	var apiErr api.Error
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/files/deletefiles",
+		Path:   "/api/files/deletefiles",
 	}
 	rm := api.RemoveFileRequest{
 		Files: []string{folderID},
@@ -927,7 +898,7 @@ func (f *Fs) renameDir(ctx context.Context, folderID string, newName string) (er
 	var apiErr api.Error
 	opts := rest.Opts{
 		Method: "PATCH",
-		Path:   "/files/" + folderID,
+		Path:   "/api/files/" + folderID,
 	}
 	rename := api.UpdateFileInformation{
 		Name: newName,
@@ -943,183 +914,38 @@ func (f *Fs) renameDir(ctx context.Context, folderID string, newName string) (er
 	return nil
 }
 
-func int64Max(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func rangedParts(parts []api.Part, start, end int64) []api.Part {
-
-	chunkSize := parts[0].Size
-
-	startPartNumber := int64Max(int64(math.Ceil(float64(start)/float64(chunkSize)))-1, 0)
-
-	endPartNumber := int64(math.Ceil(float64(end) / float64(chunkSize)))
-
-	partsToDownload := parts[startPartNumber:endPartNumber]
-	partsToDownload[0].Start = start % chunkSize
-	partsToDownload[len(partsToDownload)-1].End = end % chunkSize
-
-	return partsToDownload
-}
-
-func rangeHeader(part api.Part) string {
-	value := "bytes="
-	if part.Start >= 0 {
-		value += strconv.FormatInt(part.Start, 10)
-
-	}
-	value += "-"
-	if part.End > 0 {
-		value += strconv.FormatInt(part.End, 10)
-	}
-	return value
-}
-
-type linearReader struct {
-	ctx    context.Context
-	parts  []api.Part
-	tag    string
-	pos    int
-	reader io.ReadCloser
-	o      *Object
-}
-
-func (r *linearReader) nextPart() (io.ReadCloser, error) {
-
-	client := r.o.fs.srv
-
-	if r.o.fs.opt.Proxy != "" {
-		client = r.o.fs.srvProxy
-	}
-
-	url := fmt.Sprintf("https://github.com/%s/git-storage/releases/download/%s/%s", r.o.fs.opt.User, r.tag, r.parts[r.pos].Name)
-
-	headers := make(map[string]string)
-
-	headers["Range"] = rangeHeader(r.parts[r.pos])
-
-	opts := rest.Opts{
-		Method:       "GET",
-		RootURL:      url,
-		ExtraHeaders: headers,
-	}
-
-	var resp *http.Response
-	var err error
-
-	err = r.o.fs.pacer.Call(func() (bool, error) {
-		resp, err = client.Call(r.ctx, &opts)
-		return shouldRetry(r.ctx, resp, err)
-	})
-
-	if err != nil {
-		return nil, err
-	}
-	return resp.Body, nil
-}
-
-func (o *Object) newLinearReader(ctx context.Context, start, end int64) (io.ReadCloser, error) {
-
-	parts := rangedParts(o.parts, start, end)
-
-	r := &linearReader{
-		ctx:   ctx,
-		parts: parts,
-		tag:   o.tag,
-		o:     o,
-	}
-
-	res, err := r.nextPart()
-
-	if err != nil {
-		return nil, err
-	}
-
-	r.reader = res
-
-	return r, nil
-}
-
-func (r *linearReader) Read(p []byte) (n int, err error) {
-
-	n, err = r.reader.Read(p)
-
-	if err == io.EOF && r.pos < len(r.parts)-1 {
-		r.pos++
-
-		r.reader, err = r.nextPart()
-
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	if err == io.EOF && r.pos == len(r.parts)-1 {
-		return 0, io.EOF
-	}
-
-	return n, nil
-}
-
-func (r *linearReader) Close() (err error) {
-	if r.reader != nil {
-		err = r.reader.Close()
-		r.reader = nil
-	}
-	return
-}
-
 // Open an object for read
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
 
 	fs.FixRangeOption(options, o.size)
 
-	if !o.fs.opt.DirectStream {
-		var resp *http.Response
-		client := o.fs.srv
+	var resp *http.Response
 
-		if o.fs.opt.Proxy != "" {
-			client = o.fs.srvProxy
-		}
-		
-		playUrl := fmt.Sprintf("%s/files/%s/%s", o.fs.opt.ApiHost,o.id, o.name)
-		if o.fs.opt.MediaProxy != "" {
-			playUrl = o.fs.opt.MediaProxy+ playUrl
-		}
+	var opts rest.Opts
 
-		opts := rest.Opts{
+	if o.fs.opt.MediaProxy != "" {
+		opts = rest.Opts{
 			Method:  "GET",
-			RootURL: playUrl,
+			RootURL: fmt.Sprintf("%s/stream/assets/%s/%s", o.fs.opt.MediaProxy, o.id, o.name),
 			Options: options,
 		}
-
-		err = o.fs.pacer.Call(func() (bool, error) {
-			resp, err = client.Call(ctx, &opts)
-			return shouldRetry(ctx, resp, err)
-		})
-
-		if err != nil {
-			return nil, err
-		}
-		return resp.Body, err
 	} else {
-
-		var rangeOption *fs.RangeOption
-
-		for _, option := range options {
-			switch option := option.(type) {
-			case *fs.RangeOption:
-				rangeOption = option
-			default:
-				rangeOption = &fs.RangeOption{Start: 0, End: o.size - 1}
-			}
+		opts = rest.Opts{
+			Method:  "GET",
+			Path:    fmt.Sprintf("/api/files/%s/%s", o.id, o.name),
+			Options: options,
 		}
-
-		return o.newLinearReader(ctx, rangeOption.Start, rangeOption.End)
 	}
+
+	err = o.fs.pacer.Call(func() (bool, error) {
+		resp, err = o.fs.srv.Call(ctx, &opts)
+		return shouldRetry(ctx, resp, err)
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, err
 
 }
 
@@ -1173,7 +999,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	if needMove {
 		opts := rest.Opts{
 			Method: "POST",
-			Path:   "/files/movefiles",
+			Path:   "/api/files/movefiles",
 		}
 		move := api.MoveFileRequest{
 			Files:       []string{srcInfo.Files[0].Id},
@@ -1208,7 +1034,7 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 	var info api.ReadMetadataResponse
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/files",
+		Path:   "/api/files",
 		Parameters: url.Values{
 			"parentId": []string{"root"},
 			"op":       []string{"find"},
@@ -1294,7 +1120,7 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 func (o *Object) Remove(ctx context.Context) error {
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/files/deletefiles",
+		Path:   "/api/files/deletefiles",
 	}
 	delete := api.RemoveFileRequest{
 		Files: []string{o.id},
