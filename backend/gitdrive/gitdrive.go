@@ -528,7 +528,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 
 		opts := rest.Opts{
 			Method: "GET",
-			Path:   "/uploads/" + uploadId,
+			Path:   "/api/uploads/" + uploadId,
 		}
 
 		err := f.pacer.Call(func() (bool, error) {
@@ -559,7 +559,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		} else {
 			opts := rest.Opts{
 				Method: "GET",
-				Path:   "/releases/upload",
+				Path:   "/api/releases/upload",
 			}
 
 			err := f.pacer.Call(func() (bool, error) {
@@ -641,7 +641,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 			if f.opt.UploadResume {
 				opts = rest.Opts{
 					Method: "POST",
-					Path:   "/uploads",
+					Path:   "/api/uploads",
 				}
 				err = f.pacer.Call(func() (bool, error) {
 					resp, err := f.srv.CallJSON(ctx, &opts, &uploadPart, nil)
@@ -688,7 +688,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	if f.opt.UploadResume {
 		opts = rest.Opts{
 			Method: "DELETE",
-			Path:   "/uploads/" + uploadId,
+			Path:   "/api/uploads/" + uploadId,
 		}
 		err = f.pacer.Call(func() (bool, error) {
 			resp, err := f.srv.Call(ctx, &opts)
