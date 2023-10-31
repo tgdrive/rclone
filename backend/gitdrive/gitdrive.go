@@ -73,9 +73,14 @@ func init() {
 			Help:     "Upload chunk size",
 			Advanced: true,
 		}, {
-			Name:     "upload_resume",
+			Name:     "resume_upload",
 			Default:  true,
-			Help:     "Upload Resume",
+			Help:     "Resume Upload",
+			Advanced: true,
+		}, {
+			Name:     "upload_concurrency",
+			Default:  4,
+			Help:     "Upload Concurrency",
 			Advanced: true,
 		}, {
 
@@ -95,15 +100,16 @@ func init() {
 
 // Options defines the configuration for this backend
 type Options struct {
-	ApiHost      string               `config:"api_host"`
-	GitToken     string               `config:"git_token"`
-	Enc          encoder.MultiEncoder `config:"encoding"`
-	User         string               `config:"user"`
-	SessionToken string               `config:"session_token"`
-	ChunkSize    fs.SizeSuffix        `config:"chunk_size"`
-	UploadResume bool                 `config:"upload_resume"`
-	DirectStream bool                 `config:"direct_stream"`
-	MediaProxy   string               `config:"media_proxy"`
+	ApiHost           string               `config:"api_host"`
+	GitToken          string               `config:"git_token"`
+	Enc               encoder.MultiEncoder `config:"encoding"`
+	User              string               `config:"user"`
+	SessionToken      string               `config:"session_token"`
+	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`
+	MediaProxy        string               `config:"media_proxy"`
+	ResumeUpload      bool                 `config:"resume_upload"`
+	UploadConcurrency int                  `config:"upload_concurrency"`
+	Repo              string               `config:"repo"`
 }
 
 // Fs is the interface a cloud storage system must provide
@@ -252,6 +258,7 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		DuplicateFiles:          false,
 		CanHaveEmptyDirectories: true,
 		ReadMimeType:            false,
+		ChunkWriterDoesntSeek:   true,
 	}).Fill(ctx, f)
 
 	client := fshttp.NewClient(ctx)
@@ -284,12 +291,6 @@ func (f *Fs) decodeError(resp *http.Response, response interface{}) (err error) 
 
 func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.MetadataRequestOptions) (*api.ReadMetadataResponse, error) {
 
-	op := "list"
-
-	if f.opt.DirectStream {
-		op = "listfull"
-	}
-
 	opts := rest.Opts{
 		Method: "GET",
 		Path:   "/api/files",
@@ -298,7 +299,7 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.
 			"perPage":       []string{strconv.FormatUint(options.PerPage, 10)},
 			"sort":          []string{"name"},
 			"order":         []string{"asc"},
-			"op":            []string{op},
+			"op":            []string{"list"},
 			"nextPageToken": []string{options.NextPageToken},
 		},
 	}
@@ -524,7 +525,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 
 	uploadId := MD5(fmt.Sprintf("%s:%d:%s", path.Join(fullBase, leaf), src.Size(), modTime))
 
-	if f.opt.UploadResume {
+	if f.opt.ResumeUpload {
 
 		opts := rest.Opts{
 			Method: "GET",
@@ -575,12 +576,11 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 
 		}
 
-		uploadUrl := fmt.Sprintf("https://uploads.github.com/repos/%s/git-storage/releases/%d/assets", f.opt.User, releaseId)
+		uploadUrl := fmt.Sprintf("https://uploads.github.com/repos/%s/%s/releases/%d/assets", f.opt.User, f.opt.Repo, releaseId)
 
 		headers := make(map[string]string)
 		headers["accept"] = "application/vnd.github+json"
 		headers["authorization"] = fmt.Sprintf("Bearer %s", f.opt.GitToken)
-		headers["X-GitHub-Api-Version"] = "2022-11-28"
 
 		in := bufio.NewReader(in0)
 
@@ -638,7 +638,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 				Id:        info.Id,
 				Size:      info.Size}
 
-			if f.opt.UploadResume {
+			if f.opt.ResumeUpload {
 				opts = rest.Opts{
 					Method: "POST",
 					Path:   "/api/uploads",
@@ -685,7 +685,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		return err
 	}
 
-	if f.opt.UploadResume {
+	if f.opt.ResumeUpload {
 		opts = rest.Opts{
 			Method: "DELETE",
 			Path:   "/api/uploads/" + uploadId,
@@ -769,6 +769,100 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	*o = *info.(*Object)
 
 	return nil
+}
+
+// OpenChunkWriter returns the chunk size and a ChunkWriter
+//
+// Pass in the remote and the src object
+// You can also use options to hint at the desired chunk size
+func (f *Fs) OpenChunkWriter(
+	ctx context.Context,
+	remote string,
+	src fs.ObjectInfo,
+	options ...fs.OpenOption) (info fs.ChunkWriterInfo, writer fs.ChunkWriter, err error) {
+
+	o := &Object{
+		fs:     f,
+		remote: remote,
+	}
+	ui, err := o.prepareUpload(ctx, src, options)
+
+	if err != nil {
+		return info, nil, fmt.Errorf("failed to prepare upload: %w", err)
+	}
+
+	size := src.Size()
+
+	chunkSize := f.opt.ChunkSize
+
+	if err != nil {
+		return info, nil, fmt.Errorf("create multipart upload request failed: %w", err)
+	}
+
+	existingParts := make(map[int]api.UploadPart, len(ui.existingChunks))
+
+	for _, part := range ui.existingChunks {
+		existingParts[part.PartNo] = part
+	}
+
+	releaseID := int64(0)
+
+	if len(existingParts) != 0 {
+		releaseID = existingParts[0].ReleaseId
+	}
+
+	var uploadURL string
+
+	uploadURL, releaseID, err = f.getUploadURL(ctx, releaseID)
+
+	if err != nil {
+		return info, nil, err
+	}
+
+	chunkWriter := &objectChunkWriter{
+		chunkSize:     int64(chunkSize),
+		size:          size,
+		f:             f,
+		uploadID:      ui.uploadID,
+		existingParts: existingParts,
+		uploadURL:     uploadURL,
+		releaseID:     releaseID,
+		src:           src,
+		o:             o,
+	}
+	info = fs.ChunkWriterInfo{
+		ChunkSize:         int64(chunkSize),
+		Concurrency:       o.fs.opt.UploadConcurrency,
+		LeavePartsOnError: true,
+	}
+	fs.Debugf(o, "open chunk writer: started upload: %v", ui.uploadID)
+	return info, chunkWriter, err
+}
+
+func (f *Fs) getUploadURL(ctx context.Context, releaseID int64) (string, int64, error) {
+	var release api.Release
+	if releaseID == 0 {
+		opts := rest.Opts{
+			Method: "GET",
+			Path:   "/api/releases/upload",
+		}
+
+		err := f.pacer.Call(func() (bool, error) {
+			resp, err := f.srv.CallJSON(ctx, &opts, nil, &release)
+			return shouldRetry(ctx, resp, err)
+		})
+
+		if err != nil {
+			return "", 0, err
+		}
+
+		releaseID = release.ReleaseId
+
+	}
+
+	uploadUrl := fmt.Sprintf("https://uploads.github.com/repos/%s/%s/releases/%d/assets", f.opt.User, f.opt.Repo, releaseID)
+
+	return uploadUrl, releaseID, nil
 }
 
 // CreateDir dir creates a directory with the given parent path
@@ -1029,30 +1123,6 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	return nil
 }
 
-func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
-	var resp *http.Response
-	var info api.ReadMetadataResponse
-	opts := rest.Opts{
-		Method: "GET",
-		Path:   "/api/files",
-		Parameters: url.Values{
-			"parentId": []string{"root"},
-			"op":       []string{"find"},
-		},
-	}
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, nil, &info)
-		return shouldRetry(ctx, resp, err)
-	})
-	if err != nil {
-		return nil, err
-	}
-	usage = &fs.Usage{
-		Used: fs.NewUsageValue(info.Files[0].Size),
-	}
-	return usage, nil
-}
-
 // Copy src to this remote using server side move operations.
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 
@@ -1141,9 +1211,10 @@ func (o *Object) Remove(ctx context.Context) error {
 
 // Check the interfaces are satisfied
 var (
-	_ fs.Fs       = (*Fs)(nil)
-	_ fs.Copier   = (*Fs)(nil)
-	_ fs.Mover    = (*Fs)(nil)
-	_ fs.DirMover = (*Fs)(nil)
-	_ fs.Object   = (*Object)(nil)
+	_ fs.Fs              = (*Fs)(nil)
+	_ fs.Copier          = (*Fs)(nil)
+	_ fs.Mover           = (*Fs)(nil)
+	_ fs.DirMover        = (*Fs)(nil)
+	_ fs.Object          = (*Object)(nil)
+	_ fs.OpenChunkWriter = (*Fs)(nil)
 )

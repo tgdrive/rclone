@@ -55,16 +55,24 @@ func init() {
 			Name:      "api_host",
 			Sensitive: true,
 		}, {
-			Help:      "Chunk Size",
-			Name:      "chunk_size",
-			Default:   defaultChunkSize,
-			Sensitive: true,
+			Help:    "Chunk Size",
+			Name:    "chunk_size",
+			Default: defaultChunkSize,
+		}, {
+			Name:     "randomise_part",
+			Default:  true,
+			Help:     "Randomise part",
+			Advanced: true,
+		}, {
+			Name:     "upload_concurrency",
+			Default:  4,
+			Help:     "Upload Concurrency",
+			Advanced: true,
 		}, {
 
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
 			Advanced: true,
-			// maxFileLength = 255
 			Default: (encoder.Display |
 				encoder.EncodeBackQuote |
 				encoder.EncodeDoubleQuote |
@@ -77,10 +85,12 @@ func init() {
 
 // Options defines the configuration for this backend
 type Options struct {
-	ApiHost     string               `config:"api_host"`
-	AccessToken string               `config:"access_token"`
-	ChunkSize   fs.SizeSuffix        `config:"chunk_size"`
-	Enc         encoder.MultiEncoder `config:"encoding"`
+	ApiHost           string               `config:"api_host"`
+	AccessToken       string               `config:"access_token"`
+	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`
+	RandomisePart     bool                 `config:"randomise_part"`
+	UploadConcurrency int                  `config:"upload_concurrency"`
+	Enc               encoder.MultiEncoder `config:"encoding"`
 }
 
 // Fs is the interface a cloud storage system must provide
@@ -244,6 +254,7 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		DuplicateFiles:          false,
 		CanHaveEmptyDirectories: true,
 		ReadMimeType:            false,
+		ChunkWriterDoesntSeek:   true,
 	}).Fill(ctx, f)
 
 	client := fshttp.NewClient(ctx)
@@ -569,7 +580,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		if totalParts > 1 {
 			name = fmt.Sprintf("%s.part.%03d", name, partNo)
 		}
-		
+
 		opts := rest.Opts{
 			Method:        "POST",
 			Path:          "/api/uploads/" + uploadID,
@@ -709,6 +720,58 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	*o = *info.(*Object)
 
 	return nil
+}
+
+// OpenChunkWriter returns the chunk size and a ChunkWriter
+//
+// Pass in the remote and the src object
+// You can also use options to hint at the desired chunk size
+func (f *Fs) OpenChunkWriter(
+	ctx context.Context,
+	remote string,
+	src fs.ObjectInfo,
+	options ...fs.OpenOption) (info fs.ChunkWriterInfo, writer fs.ChunkWriter, err error) {
+
+	o := &Object{
+		fs:     f,
+		remote: remote,
+	}
+	ui, err := o.prepareUpload(ctx, src, options)
+
+	if err != nil {
+		return info, nil, fmt.Errorf("failed to prepare upload: %w", err)
+	}
+
+	size := src.Size()
+
+	chunkSize := f.opt.ChunkSize
+
+	if err != nil {
+		return info, nil, fmt.Errorf("create multipart upload request failed: %w", err)
+	}
+
+	existingParts := make(map[int]api.PartFile, len(ui.existingChunks))
+
+	for _, part := range ui.existingChunks {
+		existingParts[part.PartNo] = part
+	}
+
+	chunkWriter := &objectChunkWriter{
+		chunkSize:     int64(chunkSize),
+		size:          size,
+		f:             f,
+		uploadID:      ui.uploadID,
+		existingParts: existingParts,
+		src:           src,
+		o:             o,
+	}
+	info = fs.ChunkWriterInfo{
+		ChunkSize:         int64(chunkSize),
+		Concurrency:       o.fs.opt.UploadConcurrency,
+		LeavePartsOnError: true,
+	}
+	fs.Debugf(o, "open chunk writer: started upload: %v", ui.uploadID)
+	return info, chunkWriter, err
 }
 
 // CreateDir dir creates a directory with the given parent path
@@ -1049,9 +1112,10 @@ func (o *Object) Remove(ctx context.Context) error {
 
 // Check the interfaces are satisfied
 var (
-	_ fs.Fs       = (*Fs)(nil)
-	_ fs.Copier   = (*Fs)(nil)
-	_ fs.Mover    = (*Fs)(nil)
-	_ fs.DirMover = (*Fs)(nil)
-	_ fs.Object   = (*Object)(nil)
+	_ fs.Fs              = (*Fs)(nil)
+	_ fs.Copier          = (*Fs)(nil)
+	_ fs.Mover           = (*Fs)(nil)
+	_ fs.DirMover        = (*Fs)(nil)
+	_ fs.Object          = (*Object)(nil)
+	_ fs.OpenChunkWriter = (*Fs)(nil)
 )
