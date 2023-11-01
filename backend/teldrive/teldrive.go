@@ -282,6 +282,19 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 
 	f.authHash = session.Hash
 
+	dir, base := f.splitPath(f.root)
+
+	res, err := f.findObject(ctx, "/"+dir, base)
+
+	if err != nil && !errors.Is(err, fs.ErrorDirNotFound) {
+		return nil, err
+	}
+
+	if res != nil && len(res.Files) == 1 && res.Files[0].Type == "file" {
+		f.root = dir
+		return f, fs.ErrorIsFile
+	}
+
 	return f, nil
 }
 
@@ -329,7 +342,7 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.
 		return shouldRetry(ctx, resp, err)
 	})
 
-	if err != nil && resp.StatusCode == 404 {
+	if resp.StatusCode == 404 {
 		return nil, fs.ErrorDirNotFound
 	}
 
@@ -361,6 +374,39 @@ func (f *Fs) getPathInfo(ctx context.Context, path string) (*api.ReadMetadataRes
 		resp, err = f.srv.Call(ctx, &opts)
 		return shouldRetry(ctx, resp, err)
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	err = f.decodeError(resp, &info)
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+func (f *Fs) findObject(ctx context.Context, path string, name string) (*api.ReadMetadataResponse, error) {
+
+	opts := rest.Opts{
+		Method: "GET",
+		Path:   "/api/files",
+		Parameters: url.Values{
+			"path": []string{f.opt.Enc.FromStandardPath(path)},
+			"op":   []string{"find"},
+			"name": []string{name},
+		},
+	}
+	var err error
+	var info api.ReadMetadataResponse
+	var resp *http.Response
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err = f.srv.Call(ctx, &opts)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil && resp.StatusCode == 404 {
+		return nil, fs.ErrorDirNotFound
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -443,8 +489,9 @@ func (f *Fs) newObjectWithInfo(ctx context.Context, remote string, info *api.Fil
 // NewObject finds the Object at remote.  If it can't be found it
 // returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	// no way to directly access an object by path so we have to list the parent dir
-	entries, err := f.List(ctx, path.Dir(remote))
+
+	res, err := f.findObject(ctx, path.Dir(f.dirPath(remote)), remote)
+
 	if err != nil {
 		// need to change error type
 		// if the parent dir doesn't exist the object doesn't exist either
@@ -453,22 +500,15 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		}
 		return nil, err
 	}
-	for _, entry := range entries {
-		if o, ok := entry.(fs.Object); ok {
-			if o.Remote() == remote {
-				return o, nil
-			}
-		}
+
+	if len(res.Files) == 0 {
+		return nil, fs.ErrorObjectNotFound
 	}
-	return nil, fs.ErrorObjectNotFound
+
+	return f.newObjectWithInfo(ctx, remote, &res.Files[0])
 }
 
 func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error) {
-
-	meta, err := f.getPathInfo(ctx, dstPath)
-	if err != nil && len(meta.Files) == 0 {
-		return err
-	}
 
 	opts := rest.Opts{
 		Method: "POST",
@@ -477,7 +517,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 
 	mv := api.MoveFileRequest{
 		Files:       []string{fileID},
-		Destination: meta.Files[0].Id,
+		Destination: dstPath,
 	}
 
 	var resp *http.Response
@@ -489,10 +529,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 	if err != nil {
 		return fmt.Errorf("couldn't move file: %w", err)
 	}
-	if !info.Status {
-		return fmt.Errorf("move: api error: %s", info.Message)
-	}
-	return err
+	return nil
 }
 
 // updateFileInformation set's various file attributes most importantly it's name
@@ -852,7 +889,15 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	return f.purge(ctx, info.Files[0].Id)
 }
 
-// Move src to this remote using server side move operations.
+// Move src to this remote using server-side move operations.
+//
+// This is stored with the remote path given.
+//
+// It returns the destination Object and a possible error.
+//
+// Will only be called if src.Fs().Name() == f.Name()
+//
+// If it isn't possible then return fs.ErrorCantMove
 func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	srcObj, ok := src.(*Object)
 	if !ok {
@@ -861,10 +906,10 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 
 	srcBase, srcLeaf := srcObj.fs.splitPathFull(src.Remote())
-	dstBase, dstLeaf := f.splitPathFull(remote)
+	dstBase, dstLeaf := f.splitPath(f.root)
 
 	needRename := srcLeaf != dstLeaf
-	needMove := srcBase != dstBase
+	needMove := strings.Trim(srcBase, "/") != strings.Trim(dstBase, "/")
 
 	// do the move if required
 	if needMove {
@@ -896,24 +941,82 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	return &newObj, nil
 }
 
-func (f *Fs) renameDir(ctx context.Context, folderID string, newName string) (err error) {
-	var resp *http.Response
-	var apiErr api.Error
-	opts := rest.Opts{
-		Method: "PATCH",
-		Path:   "/api/files/" + folderID,
+// DirMove moves src, srcRemote to this remote at dstRemote
+// using server-side move operations.
+//
+// Will only be called if src.Fs().Name() == f.Name()
+//
+// If it isn't possible then return fs.ErrorCantDirMove
+
+// If destination exists then return fs.ErrorDirExists
+func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
+	srcFs, ok := src.(*Fs)
+	if !ok {
+		fs.Debugf(srcFs, "Can't move directory - not same remote type")
+		return fs.ErrorCantDirMove
 	}
-	rename := api.UpdateFileInformation{
-		Name: newName,
-		Type: "folder",
-	}
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, &rename, &apiErr)
-		return shouldRetry(ctx, resp, err)
-	})
+
+	entries, err := srcFs.List(ctx, srcRemote)
 	if err != nil {
-		return err
+		return fmt.Errorf("dirmove: source not found: %w", err)
 	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// check if the destination already exists
+	dstPath := f.dirPath(dstRemote)
+	dstBase, dstName := f.splitPathFull(dstRemote)
+	_, err = f.getPathInfo(ctx, dstPath)
+	if err == nil {
+		return fs.ErrorDirExists
+	} else {
+		// make the destination path
+		err = f.CreateDir(ctx, dstBase, dstName)
+		if err != nil {
+			return fmt.Errorf("dirmove: failed to create dirs: %w", err)
+		}
+	}
+
+	srcPath := srcFs.dirPath(dstRemote)
+
+	needMove := srcPath != dstPath
+
+	var fileIds []string
+
+	for _, entry := range entries {
+		dir, ok := entry.(fs.Directory)
+		if ok {
+			fileIds = append(fileIds, dir.ID())
+		} else {
+			file, ok := entry.(*Object)
+			if ok {
+				fileIds = append(fileIds, file.id)
+			}
+		}
+
+	}
+	// do the move
+	if needMove {
+		opts := rest.Opts{
+			Method: "POST",
+			Path:   "/api/files/movefiles",
+		}
+		move := api.MoveFileRequest{
+			Files:       fileIds,
+			Destination: dstPath,
+		}
+		var resp *http.Response
+		err = f.pacer.Call(func() (bool, error) {
+			resp, err = f.srv.CallJSON(ctx, &opts, &move, nil)
+			return shouldRetry(ctx, resp, err)
+		})
+		if err != nil {
+			return fmt.Errorf("dirmove: failed to move: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -944,89 +1047,9 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	return resp.Body, err
 }
 
-// DirMove moves src, srcRemote to this remote at dstRemote
-// using server-side move operations.
-//
-// Will only be called if src.Fs().Name() == f.Name()
-//
-// If it isn't possible then return fs.ErrorCantDirMove
-
-// If destination exists then return fs.ErrorDirExists
-func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string) error {
-	srcFs, ok := src.(*Fs)
-	if !ok {
-		fs.Debugf(srcFs, "Can't move directory - not same remote type")
-		return fs.ErrorCantDirMove
-	}
-
-	// find out source
-	srcPath := srcFs.dirPath(srcRemote)
-	srcInfo, err := f.getPathInfo(ctx, srcPath)
-	if err != nil {
-		return fmt.Errorf("dirmove: source not found: %w", err)
-	}
-	// check if the destination already exists
-	dstPath := f.dirPath(dstRemote)
-	info, err := f.getPathInfo(ctx, dstPath)
-	if len(info.Files) > 0 {
-		return fs.ErrorDirExists
-	}
-
-	// make the destination parent path
-	dstBase, dstName := f.splitPathFull(dstRemote)
-	err = f.CreateDir(ctx, dstBase, "")
-	if err != nil {
-		return fmt.Errorf("dirmove: failed to create dirs: %w", err)
-	}
-
-	// find the destination parent dir
-	_, err = f.getPathInfo(ctx, dstBase)
-
-	if err != nil {
-		return fmt.Errorf("dirmove: failed to read destination: %w", err)
-	}
-	srcBase, srcName := srcFs.splitPathFull(srcRemote)
-
-	needRename := srcName != dstName
-	needMove := srcBase != dstBase
-
-	// do the move
-	if needMove {
-		opts := rest.Opts{
-			Method: "POST",
-			Path:   "/api/files/movefiles",
-		}
-		move := api.MoveFileRequest{
-			Files:       []string{srcInfo.Files[0].Id},
-			Destination: dstBase,
-		}
-		var resp *http.Response
-		var apiErr api.Error
-		err = f.pacer.Call(func() (bool, error) {
-			resp, err = f.srv.CallJSON(ctx, &opts, &move, &apiErr)
-			return shouldRetry(ctx, resp, err)
-		})
-		if err != nil {
-			return fmt.Errorf("dirmove: failed to move: %w", err)
-		}
-		if !apiErr.Status {
-			return apiErr
-		}
-	}
-
-	// rename to final name
-	if needRename {
-		err = f.renameDir(ctx, srcInfo.Files[0].Id, dstName)
-		if err != nil {
-			return fmt.Errorf("dirmove: failed final rename: %w", err)
-		}
-	}
-	return nil
-}
-
 // Copy src to this remote using server side move operations.
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-
+	
 	return nil, nil
 }
 
