@@ -138,6 +138,10 @@ type MoveFileRequest struct {
 	Files       []string `json:"files"`
 	Destination string   `json:"destination"`
 }
+type DirMove struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+}
 
 // UpdateFileInformation is used for renaming a file
 type UpdateFileInformation struct {

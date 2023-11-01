@@ -686,7 +686,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	if err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -906,14 +906,14 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 
 	srcBase, srcLeaf := srcObj.fs.splitPathFull(src.Remote())
-	dstBase, dstLeaf := f.splitPath(f.root)
+	dstBase, dstLeaf := f.splitPathFull(remote)
 
 	needRename := srcLeaf != dstLeaf
-	needMove := strings.Trim(srcBase, "/") != strings.Trim(dstBase, "/")
+	needMove := srcBase != dstBase
 
 	// do the move if required
 	if needMove {
-		err := f.CreateDir(ctx, strings.Trim(dstBase, "/"), "")
+		err := f.CreateDir(ctx, dstBase, "")
 		if err != nil {
 			return nil, fmt.Errorf("move: failed to make destination dirs: %w", err)
 		}
@@ -956,67 +956,27 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 		return fs.ErrorCantDirMove
 	}
 
-	entries, err := srcFs.List(ctx, srcRemote)
-	if err != nil {
-		return fmt.Errorf("dirmove: source not found: %w", err)
-	}
-
-	if len(entries) == 0 {
-		return nil
-	}
-
-	// check if the destination already exists
 	dstPath := f.dirPath(dstRemote)
-	dstBase, dstName := f.splitPathFull(dstRemote)
-	_, err = f.getPathInfo(ctx, dstPath)
-	if err == nil {
-		return fs.ErrorDirExists
-	} else {
-		// make the destination path
-		err = f.CreateDir(ctx, dstBase, dstName)
-		if err != nil {
-			return fmt.Errorf("dirmove: failed to create dirs: %w", err)
-		}
+
+	srcPath := srcFs.dirPath(srcRemote)
+
+	opts := rest.Opts{
+		Method: "POST",
+		Path:   "/api/files/movedir",
 	}
-
-	srcPath := srcFs.dirPath(dstRemote)
-
-	needMove := srcPath != dstPath
-
-	var fileIds []string
-
-	for _, entry := range entries {
-		dir, ok := entry.(fs.Directory)
-		if ok {
-			fileIds = append(fileIds, dir.ID())
-		} else {
-			file, ok := entry.(*Object)
-			if ok {
-				fileIds = append(fileIds, file.id)
-			}
-		}
-
+	move := api.DirMove{
+		Source:      srcPath,
+		Destination: dstPath,
 	}
-	// do the move
-	if needMove {
-		opts := rest.Opts{
-			Method: "POST",
-			Path:   "/api/files/movefiles",
-		}
-		move := api.MoveFileRequest{
-			Files:       fileIds,
-			Destination: dstPath,
-		}
-		var resp *http.Response
-		err = f.pacer.Call(func() (bool, error) {
-			resp, err = f.srv.CallJSON(ctx, &opts, &move, nil)
-			return shouldRetry(ctx, resp, err)
-		})
-		if err != nil {
-			return fmt.Errorf("dirmove: failed to move: %w", err)
-		}
+	var resp *http.Response
+	var err error
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err = f.srv.CallJSON(ctx, &opts, &move, nil)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil {
+		return fmt.Errorf("dirmove: failed to move: %w", err)
 	}
-
 	return nil
 }
 
@@ -1049,7 +1009,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 // Copy src to this remote using server side move operations.
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	
+
 	return nil, nil
 }
 
