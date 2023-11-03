@@ -33,6 +33,7 @@ type objectChunkWriter struct {
 	partsToCommit   []api.PartFile
 	existingParts   map[int]api.PartFile
 	o               *Object
+	totalParts      int64
 }
 
 // WriteChunk will write chunk number with reader bytes, where chunk number >= 0
@@ -49,6 +50,8 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		w.addCompletedPart(existing)
 		return existing.Size, nil
 	}
+
+	var response api.PartFile
 
 	err = w.f.pacer.Call(func() (bool, error) {
 
@@ -71,7 +74,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		} else {
 			_, leaf := w.f.splitPath(w.src.Remote())
 			name = leaf
-			if w.chunkSize > w.src.Size() {
+			if w.totalParts > 1 {
 				name = fmt.Sprintf("%s.part.%03d", name, chunkNumber)
 			}
 		}
@@ -87,15 +90,10 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 			},
 		}
 
-		var response api.PartFile
-
 		resp, err := w.f.srv.CallJSON(ctx, &opts, nil, &response)
 		retry, err := shouldRetry(ctx, resp, err)
 		if err != nil {
 			fs.Debugf(w.o, "Error sending chunk %d (retry=%v): %v: %#v", chunkNumber, retry, err, err)
-		} else {
-
-			w.addCompletedPart(response)
 		}
 		return retry, err
 
@@ -104,6 +102,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 	if err != nil {
 		fs.Debugf(w.o, "Error sending chunk %d: %v", chunkNumber, err)
 	} else {
+		w.addCompletedPart(response)
 		fs.Debugf(w.o, "Done sending chunk %d", chunkNumber)
 	}
 	return size, err
@@ -118,6 +117,10 @@ func (w *objectChunkWriter) addCompletedPart(part api.PartFile) {
 }
 
 func (w *objectChunkWriter) Close(ctx context.Context) error {
+
+	if w.totalParts != int64(len(w.partsToCommit)) {
+		return fmt.Errorf("uploaded failed")
+	}
 
 	base, leaf := w.f.splitPath(w.src.Remote())
 

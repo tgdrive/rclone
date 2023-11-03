@@ -781,10 +781,12 @@ func (f *Fs) OpenChunkWriter(
 
 	size := src.Size()
 
-	chunkSize := f.opt.ChunkSize
+	chunkSize := int64(f.opt.ChunkSize)
 
-	if err != nil {
-		return info, nil, fmt.Errorf("create multipart upload request failed: %w", err)
+	totalParts := size / chunkSize
+
+	if src.Size()%chunkSize != 0 {
+		totalParts++
 	}
 
 	existingParts := make(map[int]api.PartFile, len(ui.existingChunks))
@@ -794,13 +796,14 @@ func (f *Fs) OpenChunkWriter(
 	}
 
 	chunkWriter := &objectChunkWriter{
-		chunkSize:     int64(chunkSize),
+		chunkSize:     chunkSize,
 		size:          size,
 		f:             f,
 		uploadID:      ui.uploadID,
 		existingParts: existingParts,
 		src:           src,
 		o:             o,
+		totalParts:    totalParts,
 	}
 	info = fs.ChunkWriterInfo{
 		ChunkSize:         int64(chunkSize),
