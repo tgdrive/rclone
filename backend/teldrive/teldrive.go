@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/uuid"
 	"github.com/rclone/rclone/backend/teldrive/api"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
@@ -547,58 +548,65 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	base, leaf := f.splitPathFull(src.Remote())
 
 	modTime := src.ModTime(ctx).UTC().Format(timeFormat)
+
 	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(base, leaf), src.Size(), modTime))
-
-	opts := rest.Opts{
-		Method: "GET",
-		Path:   "/api/uploads/" + uploadID,
-	}
-
-	var uploadFile api.UploadFile
-	err := f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, nil, &uploadFile)
-		return shouldRetry(ctx, resp, err)
-	})
-
-	if err != nil {
-		return fmt.Errorf("upload not found: %w", err)
-	}
-
-	uploadedSize := int64(0)
-
-	if len(uploadFile.Parts) != 0 {
-		for _, part := range uploadFile.Parts {
-			uploadedSize += part.Size
-		}
-	}
 
 	chunkSize := int64(f.opt.ChunkSize)
 
-	// Calculate total parts and chunk size
+	var existingParts map[int]api.PartFile
+
+	if chunkSize < src.Size() {
+		opts := rest.Opts{
+			Method: "GET",
+			Path:   "/api/uploads/" + uploadID,
+		}
+
+		var uploadFile api.UploadFile
+		err := f.pacer.Call(func() (bool, error) {
+			resp, err := f.srv.CallJSON(ctx, &opts, nil, &uploadFile)
+			return shouldRetry(ctx, resp, err)
+		})
+
+		if err == nil {
+			existingParts = make(map[int]api.PartFile, len(uploadFile.Parts))
+			for _, part := range uploadFile.Parts {
+				existingParts[part.PartNo] = part
+			}
+		}
+	}
+
 	totalParts := src.Size() / chunkSize
 
 	if src.Size()%chunkSize != 0 {
 		totalParts++
 	}
 
-	// Create a buffered reader
-	in := bufio.NewReader(in0)
+	var partsToCommit []api.PartFile
 
-	// Skip any previously uploaded data
-	if uploadedSize > 0 {
-		io.CopyN(io.Discard, in, uploadedSize)
-	}
+	var uploadedSize int64
 
 	name := leaf
 
-	// Upload the remaining parts
-	for partNo := len(uploadFile.Parts) + 1; partNo <= int(totalParts); partNo++ {
+	in := bufio.NewReader(in0)
+
+	for partNo := 1; partNo <= int(totalParts); partNo++ {
+
+		if existing, ok := existingParts[partNo]; ok {
+			io.CopyN(io.Discard, in, existing.Size)
+			partsToCommit = append(partsToCommit, existing)
+			uploadedSize += existing.Size
+			continue
+		}
+
 		if partNo == int(totalParts) {
 			chunkSize = src.Size() - uploadedSize
 		}
 		partReader := io.LimitReader(in, chunkSize)
 
-		if totalParts > 1 {
+		if f.opt.RandomisePart {
+			u1, _ := uuid.NewV4()
+			name = hex.EncodeToString(u1.Bytes())
+		} else if totalParts > 1 {
 			name = fmt.Sprintf("%s.part.%03d", name, partNo)
 		}
 
@@ -608,9 +616,8 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 			Body:          partReader,
 			ContentLength: &chunkSize,
 			Parameters: url.Values{
-				"fileName":   []string{name},
-				"partNo":     []string{strconv.Itoa(partNo)},
-				"totalparts": []string{strconv.FormatInt(totalParts, 10)},
+				"fileName": []string{name},
+				"partNo":   []string{strconv.Itoa(partNo)},
 			},
 		}
 
@@ -623,7 +630,8 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 			return err
 		}
 		uploadedSize += chunkSize
-		uploadFile.Parts = append(uploadFile.Parts, info)
+
+		partsToCommit = append(partsToCommit, info)
 	}
 
 	if base != "/" {
@@ -633,14 +641,14 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		}
 	}
 
-	opts = rest.Opts{
+	opts := rest.Opts{
 		Method: "POST",
 		Path:   "/api/files",
 	}
 
 	fileParts := []api.FilePart{}
 
-	for _, part := range uploadFile.Parts {
+	for _, part := range partsToCommit {
 		fileParts = append(fileParts, api.FilePart{ID: part.PartId})
 	}
 
@@ -652,7 +660,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		Size:     src.Size(),
 		Parts:    fileParts,
 	}
-	err = f.pacer.Call(func() (bool, error) {
+	err := f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, &payload, nil)
 		return shouldRetry(ctx, resp, err)
 	})

@@ -2,6 +2,7 @@
 package gitdrive
 
 import (
+	"bufio"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -523,7 +524,7 @@ func MD5(text string) string {
 	return hex.EncodeToString(algorithm.Sum(nil))
 }
 
-func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
+func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 
 	base, leaf := f.splitPathFull(src.Remote())
 
@@ -580,11 +581,14 @@ func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 		return err
 	}
 
+	in := bufio.NewReader(in0)
+
 	for partNo := 1; partNo <= int(totalParts); partNo++ {
 		if existing, ok := existingParts[partNo]; ok {
 			io.CopyN(io.Discard, in, existing.Size)
 			partsToCommit = append(partsToCommit, existing)
 			uploadedSize += existing.Size
+			continue
 		}
 
 		if partNo == int(totalParts) {
@@ -595,7 +599,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 
 		u1, _ := uuid.NewV4()
 
-		name := fmt.Sprintf("%s.zip", hex.EncodeToString([]byte(u1.Bytes())))
+		name := fmt.Sprintf("%s.zip", hex.EncodeToString(u1.Bytes()))
 
 		headers := make(map[string]string)
 		headers["accept"] = "application/vnd.github+json"

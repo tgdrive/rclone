@@ -70,7 +70,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		var name string
 		if w.f.opt.RandomisePart {
 			u1, _ := uuid.NewV4()
-			name = hex.EncodeToString([]byte(u1.Bytes()))
+			name = hex.EncodeToString(u1.Bytes())
 		} else {
 			_, name = w.f.splitPathFull(w.src.Remote())
 			if w.totalParts > 1 {

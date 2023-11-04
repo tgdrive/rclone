@@ -55,7 +55,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 	var response api.UploadInfo
 
 	u1, _ := uuid.NewV4()
-	name := fmt.Sprintf("%s.zip", hex.EncodeToString([]byte(u1.Bytes())))
+	name := fmt.Sprintf("%s.zip", hex.EncodeToString(u1.Bytes()))
 
 	err = w.f.pacer.Call(func() (bool, error) {
 
