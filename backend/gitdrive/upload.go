@@ -34,6 +34,7 @@ type objectChunkWriter struct {
 	partsToCommit   []api.UploadPart
 	existingParts   map[int]api.UploadPart
 	o               *Object
+	totalParts      int64
 }
 
 // WriteChunk will write chunk number with reader bytes, where chunk number >= 0
@@ -50,6 +51,11 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		w.addCompletedPart(existing)
 		return existing.Size, nil
 	}
+
+	var response api.UploadInfo
+
+	u1, _ := uuid.NewV4()
+	name := fmt.Sprintf("%s.zip", hex.EncodeToString([]byte(u1.Bytes())))
 
 	err = w.f.pacer.Call(func() (bool, error) {
 
@@ -70,8 +76,6 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		headers["accept"] = "application/vnd.github+json"
 		headers["authorization"] = fmt.Sprintf("Bearer %s", w.f.opt.GitToken)
 
-		u1, _ := uuid.NewV4()
-		name := fmt.Sprintf("%s.zip", hex.EncodeToString([]byte(u1.Bytes())))
 		opts := rest.Opts{
 			Method:        "POST",
 			RootURL:       w.uploadURL,
@@ -83,34 +87,10 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 				"name": []string{name},
 			},
 		}
-
-		var response api.UploadInfo
-
 		resp, err := w.f.srv.CallJSON(ctx, &opts, nil, &response)
 		retry, err := shouldRetry(ctx, resp, err)
 		if err != nil {
 			fs.Debugf(w.o, "Error sending chunk %d (retry=%v): %v: %#v", chunkNumber, retry, err, err)
-		} else {
-
-			payload := api.UploadPart{
-				UploadID:  w.uploadID,
-				Name:      name,
-				PartNo:    chunkNumber,
-				Id:        response.Id,
-				Size:      response.Size,
-				ReleaseId: w.releaseID,
-			}
-			if w.f.opt.ResumeUpload {
-				opts = rest.Opts{
-					Method: "POST",
-					Path:   "/api/uploads",
-				}
-				err = w.f.pacer.Call(func() (bool, error) {
-					resp, err := w.f.srv.CallJSON(ctx, &opts, &payload, nil)
-					return shouldRetry(ctx, resp, err)
-				})
-			}
-			w.addCompletedPart(payload)
 		}
 		return retry, err
 
@@ -119,6 +99,25 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 	if err != nil {
 		fs.Debugf(w.o, "Error sending chunk %d: %v", chunkNumber, err)
 	} else {
+		payload := api.UploadPart{
+			UploadID:  w.uploadID,
+			Name:      name,
+			PartNo:    chunkNumber,
+			Id:        response.Id,
+			Size:      response.Size,
+			ReleaseId: w.releaseID,
+		}
+		if w.f.opt.ResumeUpload {
+			opts := rest.Opts{
+				Method: "POST",
+				Path:   "/api/uploads",
+			}
+			err = w.f.pacer.Call(func() (bool, error) {
+				resp, err := w.f.srv.CallJSON(ctx, &opts, &payload, nil)
+				return shouldRetry(ctx, resp, err)
+			})
+		}
+		w.addCompletedPart(payload)
 		fs.Debugf(w.o, "Done sending chunk %d", chunkNumber)
 	}
 	return size, err
@@ -134,12 +133,14 @@ func (w *objectChunkWriter) addCompletedPart(part api.UploadPart) {
 
 func (w *objectChunkWriter) Close(ctx context.Context) error {
 
-	base, leaf := w.f.splitPath(w.src.Remote())
+	if w.totalParts != int64(len(w.partsToCommit)) {
+		return fmt.Errorf("uploaded failed")
+	}
 
-	fullBase := w.f.dirPath(base)
+	base, leaf := w.f.splitPathFull(w.src.Remote())
 
-	if fullBase != "/" {
-		err := w.f.Mkdir(ctx, base)
+	if base != "/" {
+		err := w.f.CreateDir(ctx, base, "")
 		if err != nil {
 			return err
 		}
@@ -156,7 +157,7 @@ func (w *objectChunkWriter) Close(ctx context.Context) error {
 	payload := api.CreateFileRequest{
 		Name:      w.f.opt.Enc.FromStandardName(leaf),
 		Type:      "file",
-		Path:      fullBase,
+		Path:      base,
 		MimeType:  fs.MimeType(ctx, w.src),
 		Size:      w.src.Size(),
 		Parts:     w.partsToCommit,
@@ -191,11 +192,11 @@ func (*objectChunkWriter) Abort(ctx context.Context) error {
 }
 
 func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo, options []fs.OpenOption) (*uploadInfo, error) {
-	base, leaf := o.fs.splitPath(src.Remote())
+	base, leaf := o.fs.splitPathFull(src.Remote())
 
 	modTime := src.ModTime(ctx).UTC().Format(timeFormat)
 
-	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(o.fs.dirPath(base), leaf), src.Size(), modTime))
+	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(base, leaf), src.Size(), modTime))
 
 	var uploadParts []api.UploadPart
 

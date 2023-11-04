@@ -190,23 +190,6 @@ func (f *Fs) splitPathFull(pth string) (string, string) {
 	return "/" + fullPath[:i], fullPath[i+1:]
 }
 
-// splitPath is modified splitPath version that doesn't include the separator
-// in the base path
-func (f *Fs) splitPath(pth string) (string, string) {
-	// chop of any leading or trailing '/'
-	pth = strings.Trim(pth, "/")
-
-	i := len(pth) - 1
-	for i >= 0 && pth[i] != '/' {
-		i--
-	}
-
-	if i < 0 {
-		return pth[:i+1], pth[i+1:]
-	}
-	return pth[:i], pth[i+1:]
-}
-
 func checkUploadChunkSize(cs fs.SizeSuffix) error {
 	if cs < minChunkSize {
 		return fmt.Errorf("ChunkSize: %s is less than %s", cs, minChunkSize)
@@ -282,16 +265,16 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 
 	f.authHash = session.Hash
 
-	dir, base := f.splitPath(f.root)
+	dir, base := f.splitPathFull("")
 
-	res, err := f.findObject(ctx, "/"+dir, base)
+	res, err := f.findObject(ctx, dir, base)
 
 	if err != nil && !errors.Is(err, fs.ErrorDirNotFound) {
 		return nil, err
 	}
 
 	if res != nil && len(res.Files) == 1 && res.Files[0].Type == "file" {
-		f.root = dir
+		f.root = strings.Trim(dir, "/")
 		return f, fs.ErrorIsFile
 	}
 
@@ -490,7 +473,9 @@ func (f *Fs) newObjectWithInfo(ctx context.Context, remote string, info *api.Fil
 // returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 
-	res, err := f.findObject(ctx, path.Dir(f.dirPath(remote)), remote)
+	base, leaf := f.splitPathFull(remote)
+
+	res, err := f.findObject(ctx, base, leaf)
 
 	if err != nil {
 		// need to change error type
@@ -559,11 +544,10 @@ func MD5(text string) string {
 
 func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 
-	base, leaf := f.splitPath(src.Remote())
-	fullBase := f.dirPath(base)
+	base, leaf := f.splitPathFull(src.Remote())
 
 	modTime := src.ModTime(ctx).UTC().Format(timeFormat)
-	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(fullBase, leaf), src.Size(), modTime))
+	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(base, leaf), src.Size(), modTime))
 
 	opts := rest.Opts{
 		Method: "GET",
@@ -642,8 +626,8 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		uploadFile.Parts = append(uploadFile.Parts, info)
 	}
 
-	if fullBase != "/" {
-		err := f.Mkdir(ctx, base)
+	if base != "/" {
+		err := f.CreateDir(ctx, base, "")
 		if err != nil {
 			return err
 		}
@@ -663,7 +647,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	payload := api.CreateFileRequest{
 		Name:     f.opt.Enc.FromStandardName(leaf),
 		Type:     "file",
-		Path:     fullBase,
+		Path:     base,
 		MimeType: fs.MimeType(ctx, src),
 		Size:     src.Size(),
 		Parts:    fileParts,
@@ -860,7 +844,6 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 // may or may not delete folders with contents?
 func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 	var resp *http.Response
-	var apiErr api.Error
 	opts := rest.Opts{
 		Method: "POST",
 		Path:   "/api/files/deletefiles",
@@ -869,14 +852,11 @@ func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 		Files: []string{folderID},
 	}
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, &rm, &apiErr)
+		resp, err = f.srv.CallJSON(ctx, &opts, &rm, nil)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
 		return err
-	}
-	if !apiErr.Status {
-		return fs.ErrorCantPurge
 	}
 	return nil
 }
@@ -886,7 +866,7 @@ func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 // Return an error if it doesn't exist or isn't empty
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	info, err := f.getPathInfo(ctx, f.dirPath(dir))
-	if err != nil || len(info.Files) == 0 {
+	if err != nil {
 		return err
 	}
 	return f.purge(ctx, info.Files[0].Id)
@@ -983,6 +963,25 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	return nil
 }
 
+func (o *Object) Remove(ctx context.Context) error {
+	opts := rest.Opts{
+		Method: "POST",
+		Path:   "/api/files/deletefiles",
+	}
+	delete := api.RemoveFileRequest{
+		Files: []string{o.id},
+	}
+	var info api.UpdateResponse
+	err := o.fs.pacer.Call(func() (bool, error) {
+		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, &info)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // Open an object for read
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
 	var resp *http.Response
@@ -1072,28 +1071,6 @@ func (o *Object) Storable() bool {
 // SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	return fs.ErrorCantSetModTime
-}
-
-func (o *Object) Remove(ctx context.Context) error {
-	opts := rest.Opts{
-		Method: "POST",
-		Path:   "/api/files/deletefiles",
-	}
-	delete := api.RemoveFileRequest{
-		Files: []string{o.id},
-	}
-	var info api.UpdateResponse
-	err := o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, &info)
-		return shouldRetry(ctx, resp, err)
-	})
-	if err != nil {
-		return err
-	}
-	if !info.Status {
-		return fmt.Errorf("remove: api error: %s", info.Message)
-	}
-	return nil
 }
 
 // Check the interfaces are satisfied

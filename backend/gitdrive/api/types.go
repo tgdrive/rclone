@@ -66,6 +66,11 @@ type UploadResponse struct {
 	} `json:"files"`
 }
 
+type DirMove struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+}
+
 // UpdateResponse is a generic response to various action on files (rename/copy/move)
 type UpdateResponse struct {
 	Message string `json:"message,omitempty"`

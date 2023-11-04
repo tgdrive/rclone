@@ -72,8 +72,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 			u1, _ := uuid.NewV4()
 			name = hex.EncodeToString([]byte(u1.Bytes()))
 		} else {
-			_, leaf := w.f.splitPath(w.src.Remote())
-			name = leaf
+			_, name = w.f.splitPathFull(w.src.Remote())
 			if w.totalParts > 1 {
 				name = fmt.Sprintf("%s.part.%03d", name, chunkNumber)
 			}
@@ -122,12 +121,10 @@ func (w *objectChunkWriter) Close(ctx context.Context) error {
 		return fmt.Errorf("uploaded failed")
 	}
 
-	base, leaf := w.f.splitPath(w.src.Remote())
+	base, leaf := w.f.splitPathFull(w.src.Remote())
 
-	fullBase := w.f.dirPath(base)
-
-	if fullBase != "/" {
-		err := w.f.Mkdir(ctx, base)
+	if base != "/" {
+		err := w.f.CreateDir(ctx, base, "")
 		if err != nil {
 			return err
 		}
@@ -150,7 +147,7 @@ func (w *objectChunkWriter) Close(ctx context.Context) error {
 	payload := api.CreateFileRequest{
 		Name:     w.f.opt.Enc.FromStandardName(leaf),
 		Type:     "file",
-		Path:     fullBase,
+		Path:     base,
 		MimeType: fs.MimeType(ctx, w.src),
 		Size:     w.src.Size(),
 		Parts:    fileParts,
@@ -183,11 +180,11 @@ func (*objectChunkWriter) Abort(ctx context.Context) error {
 }
 
 func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo, options []fs.OpenOption) (*uploadInfo, error) {
-	base, leaf := o.fs.splitPath(src.Remote())
+	base, leaf := o.fs.splitPathFull(src.Remote())
 
 	modTime := src.ModTime(ctx).UTC().Format(timeFormat)
 
-	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(o.fs.dirPath(base), leaf), src.Size(), modTime))
+	uploadID := MD5(fmt.Sprintf("%s:%d:%s", path.Join(base, leaf), src.Size(), modTime))
 
 	var uploadParts api.UploadFile
 	opts := rest.Opts{

@@ -2,7 +2,6 @@
 package gitdrive
 
 import (
-	"bufio"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -60,7 +59,7 @@ func init() {
 			Name:      "session_token",
 			Sensitive: true,
 		}, {
-			Help:      "User",
+			Help:      "Git User",
 			Name:      "user",
 			Sensitive: true,
 		}, {
@@ -131,8 +130,6 @@ type Object struct {
 	parentId string
 	name     string
 	modTime  string
-	parts    []api.Part
-	tag      string
 }
 
 // Name of the remote (as passed into NewFs)
@@ -210,23 +207,6 @@ func (f *Fs) splitPathFull(pth string) (string, string) {
 	return "/" + fullPath[:i], fullPath[i+1:]
 }
 
-// splitPath is modified splitPath version that doesn't include the separator
-// in the base path
-func (f *Fs) splitPath(pth string) (string, string) {
-	// chop of any leading or trailing '/'
-	pth = strings.Trim(pth, "/")
-
-	i := len(pth) - 1
-	for i >= 0 && pth[i] != '/' {
-		i--
-	}
-
-	if i < 0 {
-		return pth[:i+1], pth[i+1:]
-	}
-	return pth[:i], pth[i+1:]
-}
-
 // NewFs makes a new Fs object from the path
 //
 // The path is of the form remote:path
@@ -265,7 +245,21 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	authCookie := http.Cookie{Name: "__Secure-next-auth.session-token", Value: opt.SessionToken}
 	f.srv = rest.NewClient(client).SetRoot(opt.ApiHost).SetCookie(&authCookie)
 
+	dir, base := f.splitPathFull("")
+
+	res, err := f.findObject(ctx, dir, base)
+
+	if err != nil && !errors.Is(err, fs.ErrorDirNotFound) {
+		return nil, err
+	}
+
+	if res != nil && len(res.Files) == 1 && res.Files[0].Type == "file" {
+		f.root = strings.Trim(dir, "/")
+		return f, fs.ErrorIsFile
+	}
+
 	return f, nil
+
 }
 
 func (f *Fs) decodeError(resp *http.Response, response interface{}) (err error) {
@@ -306,10 +300,16 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.
 	var err error
 	var info api.ReadMetadataResponse
 	var resp *http.Response
+
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err = f.srv.Call(ctx, &opts)
 		return shouldRetry(ctx, resp, err)
 	})
+
+	if resp.StatusCode == 404 {
+		return nil, fs.ErrorDirNotFound
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -349,6 +349,39 @@ func (f *Fs) getPathInfo(ctx context.Context, path string) (*api.ReadMetadataRes
 	return &info, nil
 }
 
+func (f *Fs) findObject(ctx context.Context, path string, name string) (*api.ReadMetadataResponse, error) {
+
+	opts := rest.Opts{
+		Method: "GET",
+		Path:   "/api/files",
+		Parameters: url.Values{
+			"path": []string{f.opt.Enc.FromStandardPath(path)},
+			"op":   []string{"find"},
+			"name": []string{name},
+		},
+	}
+	var err error
+	var info api.ReadMetadataResponse
+	var resp *http.Response
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err = f.srv.Call(ctx, &opts)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil && resp.StatusCode == 404 {
+		return nil, fs.ErrorDirNotFound
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	err = f.decodeError(resp, &info)
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // List the objects and directories in dir into entries.  The
 // entries can be returned in any order but should be for a
 // complete directory.
@@ -372,12 +405,6 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 
 		info, err := f.readMetaDataForPath(ctx, root, opts)
 		if err != nil {
-			if apiErr, ok := err.(api.Error); ok {
-				// might indicate other errors but we can probably assume not found here
-				if !apiErr.Status {
-					return nil, fs.ErrorDirNotFound
-				}
-			}
 			return nil, err
 		}
 
@@ -419,8 +446,6 @@ func (f *Fs) newObjectWithInfo(ctx context.Context, remote string, info *api.Fil
 		parentId: info.ParentId,
 		name:     info.Name,
 		modTime:  info.ModTime,
-		parts:    info.Parts,
-		tag:      info.Tag,
 	}
 	return o, nil
 }
@@ -428,8 +453,11 @@ func (f *Fs) newObjectWithInfo(ctx context.Context, remote string, info *api.Fil
 // NewObject finds the Object at remote.  If it can't be found it
 // returns the error fs.ErrorObjectNotFound.
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
-	// no way to directly access an object by path so we have to list the parent dir
-	entries, err := f.List(ctx, path.Dir(remote))
+
+	base, leaf := f.splitPathFull(remote)
+
+	res, err := f.findObject(ctx, base, leaf)
+
 	if err != nil {
 		// need to change error type
 		// if the parent dir doesn't exist the object doesn't exist either
@@ -438,23 +466,15 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		}
 		return nil, err
 	}
-	for _, entry := range entries {
-		if o, ok := entry.(fs.Object); ok {
-			if o.Remote() == remote {
-				return o, nil
-			}
-		}
+
+	if len(res.Files) == 0 {
+		return nil, fs.ErrorObjectNotFound
 	}
-	return nil, fs.ErrorObjectNotFound
+
+	return f.newObjectWithInfo(ctx, remote, &res.Files[0])
 }
 
 func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error) {
-
-	meta, err := f.getPathInfo(ctx, dstPath)
-
-	if err != nil && len(meta.Files) == 0 {
-		return err
-	}
 
 	opts := rest.Opts{
 		Method: "POST",
@@ -463,7 +483,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 
 	mv := api.MoveFileRequest{
 		Files:       []string{fileID},
-		Destination: meta.Files[0].Id,
+		Destination: dstPath,
 	}
 
 	var resp *http.Response
@@ -475,10 +495,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 	if err != nil {
 		return fmt.Errorf("couldn't move file: %w", err)
 	}
-	if !info.Status {
-		return fmt.Errorf("move: api error: %s", info.Message)
-	}
-	return err
+	return nil
 }
 
 // updateFileInformation set's various file attributes most importantly it's name
@@ -500,33 +517,25 @@ func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileIn
 	return err
 }
 
-func int64min(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func MD5(text string) string {
 	algorithm := md5.New()
 	algorithm.Write([]byte(text))
 	return hex.EncodeToString(algorithm.Sum(nil))
 }
 
-func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
+func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 
-	base, leaf := f.splitPath(src.Remote())
-
-	fullBase := f.dirPath(base)
+	base, leaf := f.splitPathFull(src.Remote())
 
 	var uploadParts []api.UploadPart
 
 	modTime := src.ModTime(ctx).UTC().Format(timeFormat)
 
-	uploadId := MD5(fmt.Sprintf("%s:%d:%s", path.Join(fullBase, leaf), src.Size(), modTime))
+	uploadId := MD5(fmt.Sprintf("%s:%d:%s", path.Join(base, leaf), src.Size(), modTime))
+
+	var existingParts map[int]api.UploadPart
 
 	if f.opt.ResumeUpload {
-
 		opts := rest.Opts{
 			Method: "GET",
 			Path:   "/api/uploads/" + uploadId,
@@ -537,127 +546,110 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 			return shouldRetry(ctx, resp, err)
 		})
 
-		if err != nil {
-			return fmt.Errorf("upload not found: %w", err)
+		if err == nil {
+			existingParts = make(map[int]api.UploadPart, len(uploadParts))
+
+			for _, part := range uploadParts {
+				existingParts[part.PartNo] = part
+			}
 		}
+
 	}
 
-	var uploadedSize int64 = 0
+	chunkSize := int64(f.opt.ChunkSize)
+
+	totalParts := src.Size() / chunkSize
+
+	if src.Size()%chunkSize != 0 {
+		totalParts++
+	}
+
+	var partsToCommit []api.UploadPart
+
+	var uploadedSize int64
+
+	var releaseId int64
 
 	if len(uploadParts) != 0 {
-		for _, part := range uploadParts {
-			uploadedSize += part.Size
-		}
+		releaseId = uploadParts[0].ReleaseId
 	}
 
-	var release api.Release
+	uploadUrl, releaseId, err := f.getUploadURL(ctx, releaseId)
 
-	if uploadedSize != src.Size() {
-		var releaseId int64
+	if err != nil {
+		return err
+	}
 
-		if len(uploadParts) != 0 {
-			releaseId = uploadParts[0].ReleaseId
-		} else {
-			opts := rest.Opts{
-				Method: "GET",
-				Path:   "/api/releases/upload",
-			}
-
-			err := f.pacer.Call(func() (bool, error) {
-				resp, err := f.srv.CallJSON(ctx, &opts, nil, &release)
-				return shouldRetry(ctx, resp, err)
-			})
-
-			if err != nil {
-				return fmt.Errorf("release not found: %w", err)
-			}
-
-			releaseId = release.ReleaseId
-
+	for partNo := 1; partNo <= int(totalParts); partNo++ {
+		if existing, ok := existingParts[partNo]; ok {
+			io.CopyN(io.Discard, in, existing.Size)
+			partsToCommit = append(partsToCommit, existing)
+			uploadedSize += existing.Size
 		}
 
-		uploadUrl := fmt.Sprintf("https://uploads.github.com/repos/%s/%s/releases/%d/assets", f.opt.User, f.opt.Repo, releaseId)
+		if partNo == int(totalParts) {
+			chunkSize = src.Size() - uploadedSize
+		}
+
+		partReader := io.LimitReader(in, chunkSize)
+
+		u1, _ := uuid.NewV4()
+
+		name := fmt.Sprintf("%s.zip", hex.EncodeToString([]byte(u1.Bytes())))
 
 		headers := make(map[string]string)
 		headers["accept"] = "application/vnd.github+json"
 		headers["authorization"] = fmt.Sprintf("Bearer %s", f.opt.GitToken)
 
-		in := bufio.NewReader(in0)
-
-		if uploadedSize > 0 {
-			io.CopyN(io.Discard, in, uploadedSize)
+		opts := rest.Opts{
+			Method:        "POST",
+			RootURL:       uploadUrl,
+			Body:          partReader,
+			ExtraHeaders:  headers,
+			ContentLength: &chunkSize,
+			ContentType:   "application/octet-stream",
+			Parameters: url.Values{
+				"name": []string{name},
+			},
 		}
 
-		left := src.Size() - uploadedSize
+		var info api.UploadInfo
+		err := f.pacer.Call(func() (bool, error) {
+			resp, err := f.srv.CallJSON(ctx, &opts, nil, &info)
+			return shouldRetry(ctx, resp, err)
+		})
 
-		currentPartNo := len(uploadParts) + 1
+		if err != nil {
+			return err
+		}
 
-		for {
+		uploadPart := api.UploadPart{
+			UploadID:  uploadId,
+			ReleaseId: releaseId,
+			Name:      name,
+			PartNo:    partNo,
+			Id:        info.Id,
+			Size:      info.Size,
+		}
 
-			if _, err := in.Peek(1); err != nil {
-				if left > 0 {
-					return err
-				}
-				break
+		if f.opt.ResumeUpload {
+			opts = rest.Opts{
+				Method: "POST",
+				Path:   "/api/uploads",
 			}
-			n := int64(f.opt.ChunkSize)
-			if src.Size() != -1 {
-				n = int64min(left, n)
-				left -= n
-			}
-			partReader := io.LimitReader(in, n)
-
-			u1, _ := uuid.NewV4()
-			name := fmt.Sprintf("%s.zip", hex.EncodeToString([]byte(u1.Bytes())))
-			opts := rest.Opts{
-				Method:        "POST",
-				RootURL:       uploadUrl,
-				Body:          partReader,
-				ExtraHeaders:  headers,
-				ContentLength: &n,
-				ContentType:   "application/octet-stream",
-				Parameters: url.Values{
-					"name": []string{name},
-				},
-			}
-
-			var info api.UploadInfo
-			err := f.pacer.Call(func() (bool, error) {
-				resp, err := f.srv.CallJSON(ctx, &opts, nil, &info)
+			f.pacer.Call(func() (bool, error) {
+				resp, err := f.srv.CallJSON(ctx, &opts, &uploadPart, nil)
 				return shouldRetry(ctx, resp, err)
 			})
-			if err != nil {
-				return err
-			}
-
-			uploadPart := api.UploadPart{
-				UploadID:  uploadId,
-				ReleaseId: releaseId,
-				Name:      name,
-				PartNo:    currentPartNo,
-				Id:        info.Id,
-				Size:      info.Size}
-
-			if f.opt.ResumeUpload {
-				opts = rest.Opts{
-					Method: "POST",
-					Path:   "/api/uploads",
-				}
-				err = f.pacer.Call(func() (bool, error) {
-					resp, err := f.srv.CallJSON(ctx, &opts, &uploadPart, nil)
-					return shouldRetry(ctx, resp, err)
-				})
-				if err != nil {
-					return err
-				}
-			}
-			uploadParts = append(uploadParts, uploadPart)
-			currentPartNo++
 		}
+
+		uploadedSize += chunkSize
+
+		partsToCommit = append(partsToCommit, uploadPart)
 	}
 
-	if fullBase != "/" {
-		err := f.Mkdir(ctx, base)
+	if base != "/" {
+		err := f.CreateDir(ctx, base, "")
 		if err != nil {
 			return err
 		}
@@ -671,16 +663,17 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	payload := api.CreateFileRequest{
 		Name:      f.opt.Enc.FromStandardName(leaf),
 		Type:      "file",
-		Path:      fullBase,
+		Path:      base,
 		MimeType:  fs.MimeType(ctx, src),
 		Size:      src.Size(),
-		Parts:     uploadParts,
-		ReleaseId: release.ReleaseId,
+		Parts:     partsToCommit,
+		ReleaseId: releaseId,
 	}
-	err := f.pacer.Call(func() (bool, error) {
+	err = f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, &payload, nil)
 		return shouldRetry(ctx, resp, err)
 	})
+
 	if err != nil {
 		return err
 	}
@@ -793,7 +786,13 @@ func (f *Fs) OpenChunkWriter(
 
 	size := src.Size()
 
-	chunkSize := f.opt.ChunkSize
+	chunkSize := int64(f.opt.ChunkSize)
+
+	totalParts := size / chunkSize
+
+	if src.Size()%chunkSize != 0 {
+		totalParts++
+	}
 
 	if err != nil {
 		return info, nil, fmt.Errorf("create multipart upload request failed: %w", err)
@@ -829,6 +828,7 @@ func (f *Fs) OpenChunkWriter(
 		releaseID:     releaseID,
 		src:           src,
 		o:             o,
+		totalParts:    totalParts,
 	}
 	info = fs.ChunkWriterInfo{
 		ChunkSize:         int64(chunkSize),
@@ -866,7 +866,7 @@ func (f *Fs) getUploadURL(ctx context.Context, releaseID int64) (string, int64, 
 }
 
 // CreateDir dir creates a directory with the given parent path
-// base starts from root and may or may not include //
+// base starts from root
 func (f *Fs) CreateDir(ctx context.Context, base string, leaf string) (err error) {
 
 	var resp *http.Response
@@ -911,7 +911,6 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 // may or may not delete folders with contents?
 func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 	var resp *http.Response
-	var apiErr api.Error
 	opts := rest.Opts{
 		Method: "POST",
 		Path:   "/api/files/deletefiles",
@@ -920,14 +919,11 @@ func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 		Files: []string{folderID},
 	}
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, &rm, &apiErr)
+		resp, err = f.srv.CallJSON(ctx, &opts, &rm, nil)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
 		return err
-	}
-	if !apiErr.Status {
-		return apiErr
 	}
 	return nil
 }
@@ -937,75 +933,10 @@ func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 // Return an error if it doesn't exist or isn't empty
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	info, err := f.getPathInfo(ctx, f.dirPath(dir))
-	if err != nil || len(info.Files) == 0 {
-		return err
-	}
-	return f.purge(ctx, info.Files[0].Id)
-}
-
-// Move src to this remote using server side move operations.
-func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
-	srcObj, ok := src.(*Object)
-	if !ok {
-		fs.Debugf(src, "Can't move - not same remote type")
-		return nil, fs.ErrorCantMove
-	}
-
-	srcBase, srcLeaf := srcObj.fs.splitPathFull(src.Remote())
-	dstBase, dstLeaf := f.splitPathFull(remote)
-
-	needRename := srcLeaf != dstLeaf
-	needMove := srcBase != dstBase
-
-	// do the move if required
-	if needMove {
-		err := f.CreateDir(ctx, strings.Trim(dstBase, "/"), "")
-		if err != nil {
-			return nil, fmt.Errorf("move: failed to make destination dirs: %w", err)
-		}
-
-		err = f.move(ctx, dstBase, srcObj.id)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// rename to final name if we need to
-	if needRename {
-		err := f.updateFileInformation(ctx, &api.UpdateFileInformation{
-			Name: f.opt.Enc.FromStandardName(dstLeaf),
-		}, srcObj.id)
-		if err != nil {
-			return nil, fmt.Errorf("move: failed final rename: %w", err)
-		}
-	}
-
-	// copy the old object and apply the changes
-	newObj := *srcObj
-	newObj.remote = remote
-	newObj.fs = f
-	return &newObj, nil
-}
-
-func (f *Fs) renameDir(ctx context.Context, folderID string, newName string) (err error) {
-	var resp *http.Response
-	var apiErr api.Error
-	opts := rest.Opts{
-		Method: "PATCH",
-		Path:   "/api/files/" + folderID,
-	}
-	rename := api.UpdateFileInformation{
-		Name: newName,
-		Type: "folder",
-	}
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, &rename, &apiErr)
-		return shouldRetry(ctx, resp, err)
-	})
 	if err != nil {
 		return err
 	}
-	return nil
+	return f.purge(ctx, info.Files[0].Id)
 }
 
 // Open an object for read
@@ -1043,6 +974,58 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 }
 
+// Move src to this remote using server-side move operations.
+//
+// This is stored with the remote path given.
+//
+// It returns the destination Object and a possible error.
+//
+// Will only be called if src.Fs().Name() == f.Name()
+//
+// If it isn't possible then return fs.ErrorCantMove
+func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	srcObj, ok := src.(*Object)
+	if !ok {
+		fs.Debugf(src, "Can't move - not same remote type")
+		return nil, fs.ErrorCantMove
+	}
+
+	srcBase, srcLeaf := srcObj.fs.splitPathFull(src.Remote())
+	dstBase, dstLeaf := f.splitPathFull(remote)
+
+	needRename := srcLeaf != dstLeaf
+	needMove := srcBase != dstBase
+
+	// do the move if required
+	if needMove {
+		err := f.CreateDir(ctx, dstBase, "")
+		if err != nil {
+			return nil, fmt.Errorf("move: failed to make destination dirs: %w", err)
+		}
+
+		err = f.move(ctx, dstBase, srcObj.id)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// rename to final name if we need to
+	if needRename {
+		err := f.updateFileInformation(ctx, &api.UpdateFileInformation{
+			Name: f.opt.Enc.FromStandardName(dstLeaf),
+		}, srcObj.id)
+		if err != nil {
+			return nil, fmt.Errorf("move: failed final rename: %w", err)
+		}
+	}
+
+	// copy the old object and apply the changes
+	newObj := *srcObj
+	newObj.remote = remote
+	newObj.fs = f
+	return &newObj, nil
+}
+
 // DirMove moves src, srcRemote to this remote at dstRemote
 // using server-side move operations.
 //
@@ -1058,67 +1041,26 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 		return fs.ErrorCantDirMove
 	}
 
-	// find out source
-	srcPath := srcFs.dirPath(srcRemote)
-	srcInfo, err := f.getPathInfo(ctx, srcPath)
-	if err != nil {
-		return fmt.Errorf("dirmove: source not found: %w", err)
-	}
-	// check if the destination already exists
 	dstPath := f.dirPath(dstRemote)
-	info, err := f.getPathInfo(ctx, dstPath)
-	if len(info.Files) > 0 {
-		return fs.ErrorDirExists
-	}
 
-	// make the destination parent path
-	dstBase, dstName := f.splitPathFull(dstRemote)
-	err = f.CreateDir(ctx, dstBase, "")
+	srcPath := srcFs.dirPath(srcRemote)
+
+	opts := rest.Opts{
+		Method: "POST",
+		Path:   "/api/files/movedir",
+	}
+	move := api.DirMove{
+		Source:      srcPath,
+		Destination: dstPath,
+	}
+	var resp *http.Response
+	var err error
+	err = f.pacer.Call(func() (bool, error) {
+		resp, err = f.srv.CallJSON(ctx, &opts, &move, nil)
+		return shouldRetry(ctx, resp, err)
+	})
 	if err != nil {
-		return fmt.Errorf("dirmove: failed to create dirs: %w", err)
-	}
-
-	// find the destination parent dir
-	_, err = f.getPathInfo(ctx, dstBase)
-
-	if err != nil {
-		return fmt.Errorf("dirmove: failed to read destination: %w", err)
-	}
-	srcBase, srcName := srcFs.splitPathFull(srcRemote)
-
-	needRename := srcName != dstName
-	needMove := srcBase != dstBase
-
-	// do the move
-	if needMove {
-		opts := rest.Opts{
-			Method: "POST",
-			Path:   "/api/files/movefiles",
-		}
-		move := api.MoveFileRequest{
-			Files:       []string{srcInfo.Files[0].Id},
-			Destination: dstBase,
-		}
-		var resp *http.Response
-		var apiErr api.Error
-		err = f.pacer.Call(func() (bool, error) {
-			resp, err = f.srv.CallJSON(ctx, &opts, &move, &apiErr)
-			return shouldRetry(ctx, resp, err)
-		})
-		if err != nil {
-			return fmt.Errorf("dirmove: failed to move: %w", err)
-		}
-		if !apiErr.Status {
-			return apiErr
-		}
-	}
-
-	// rename to final name
-	if needRename {
-		err = f.renameDir(ctx, srcInfo.Files[0].Id, dstName)
-		if err != nil {
-			return fmt.Errorf("dirmove: failed final rename: %w", err)
-		}
+		return fmt.Errorf("dirmove: failed to move: %w", err)
 	}
 	return nil
 }
@@ -1127,6 +1069,25 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 
 	return nil, nil
+}
+
+func (o *Object) Remove(ctx context.Context) error {
+	opts := rest.Opts{
+		Method: "POST",
+		Path:   "/api/files/deletefiles",
+	}
+	delete := api.RemoveFileRequest{
+		Files: []string{o.id},
+	}
+	var info api.UpdateResponse
+	err := o.fs.pacer.Call(func() (bool, error) {
+		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, &info)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // ------------------------------------------------------------
@@ -1185,28 +1146,6 @@ func (o *Object) Storable() bool {
 // SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	return fs.ErrorCantSetModTime
-}
-
-func (o *Object) Remove(ctx context.Context) error {
-	opts := rest.Opts{
-		Method: "POST",
-		Path:   "/api/files/deletefiles",
-	}
-	delete := api.RemoveFileRequest{
-		Files: []string{o.id},
-	}
-	var info api.UpdateResponse
-	err := o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, &info)
-		return shouldRetry(ctx, resp, err)
-	})
-	if err != nil {
-		return err
-	}
-	if !info.Status {
-		return fmt.Errorf("remove: api error: %s", info.Message)
-	}
-	return nil
 }
 
 // Check the interfaces are satisfied
