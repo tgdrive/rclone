@@ -955,13 +955,13 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	if o.fs.opt.MediaProxy != "" {
 		opts = rest.Opts{
 			Method:  "GET",
-			RootURL: fmt.Sprintf("%s/stream/assets/%s/%s", o.fs.opt.MediaProxy, o.id, o.name),
+			RootURL: fmt.Sprintf("%s/stream/assets/%s/%s", o.fs.opt.MediaProxy, o.id, url.QueryEscape(o.name)),
 			Options: options,
 		}
 	} else {
 		opts = rest.Opts{
 			Method:  "GET",
-			Path:    fmt.Sprintf("/api/files/%s/%s", o.id, o.name),
+			Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
 			Options: options,
 		}
 	}

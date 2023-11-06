@@ -101,7 +101,9 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 	if err != nil {
 		fs.Debugf(w.o, "Error sending chunk %d: %v", chunkNumber, err)
 	} else {
-		w.addCompletedPart(response)
+		if response.PartId > 0 {
+			w.addCompletedPart(response)
+		}
 		fs.Debugf(w.o, "Done sending chunk %d", chunkNumber)
 	}
 	return size, err

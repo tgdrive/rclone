@@ -999,7 +999,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	fs.FixRangeOption(options, o.size)
 	opts := rest.Opts{
 		Method:  "GET",
-		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, o.name),
+		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
 		Options: options,
 		Parameters: url.Values{
 			"hash": []string{o.fs.authHash},
