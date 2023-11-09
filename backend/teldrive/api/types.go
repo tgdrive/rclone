@@ -102,6 +102,7 @@ type PartFile struct {
 	PartNo     int    `json:"partNo"`
 	TotalParts int    `json:"totalParts"`
 	Size       int64  `json:"size"`
+	ChannelID  int64  `json:"channelId"`
 }
 
 type FilePart struct {
@@ -114,6 +115,7 @@ type CreateFileRequest struct {
 	Path      string     `json:"path"`
 	MimeType  string     `json:"mimeType"`
 	Size      int64      `json:"size"`
+	ChannelID int64      `json:"channelId"`
 	Parts     []FilePart `json:"parts"`
 	CreatedAt string     `json:"createdAt,omitempty"`
 	UpdatedAt string     `json:"updatedAt,omitempty"`
@@ -154,12 +156,18 @@ type RemoveFileRequest struct {
 	Files []string `json:"files"`
 }
 
+type CopyFile struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Destination string `json:"destination"`
+}
+
 // Token represents the authentication token
 type Token struct {
 	Token string `json:"token"`
 }
 
 type Session struct {
-	UserName  string `json:"userName"`
-	Hash      string `json:"hash"`
+	UserName string `json:"userName"`
+	Hash     string `json:"hash"`
 }

@@ -65,6 +65,10 @@ func init() {
 			Help:     "Randomise part",
 			Advanced: true,
 		}, {
+			Name:      "channel_id",
+			Help:      "Channel ID",
+			Sensitive: true,
+		}, {
 			Name:     "upload_concurrency",
 			Default:  4,
 			Help:     "Upload Concurrency",
@@ -91,6 +95,7 @@ type Options struct {
 	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`
 	RandomisePart     bool                 `config:"randomise_part"`
 	UploadConcurrency int                  `config:"upload_concurrency"`
+	ChannelID         int64                `config:"channel_id"`
 	Enc               encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -555,13 +560,14 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 
 	var existingParts map[int]api.PartFile
 
+	var uploadFile api.UploadFile
+
 	if chunkSize < src.Size() {
 		opts := rest.Opts{
 			Method: "GET",
 			Path:   "/api/uploads/" + uploadID,
 		}
 
-		var uploadFile api.UploadFile
 		err := f.pacer.Call(func() (bool, error) {
 			resp, err := f.srv.CallJSON(ctx, &opts, nil, &uploadFile)
 			return shouldRetry(ctx, resp, err)
@@ -588,6 +594,12 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	name := leaf
 
 	in := bufio.NewReader(in0)
+
+	channelID := f.opt.ChannelID
+
+	if len(uploadFile.Parts) > 0 {
+		channelID = uploadFile.Parts[0].ChannelID
+	}
 
 	for partNo := 1; partNo <= int(totalParts); partNo++ {
 
@@ -616,8 +628,9 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 			Body:          partReader,
 			ContentLength: &chunkSize,
 			Parameters: url.Values{
-				"fileName": []string{name},
-				"partNo":   []string{strconv.Itoa(partNo)},
+				"fileName":  []string{name},
+				"partNo":    []string{strconv.Itoa(partNo)},
+				"channelId": []string{strconv.FormatInt(channelID, 10)},
 			},
 		}
 
@@ -653,12 +666,13 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	}
 
 	payload := api.CreateFileRequest{
-		Name:     f.opt.Enc.FromStandardName(leaf),
-		Type:     "file",
-		Path:     base,
-		MimeType: fs.MimeType(ctx, src),
-		Size:     src.Size(),
-		Parts:    fileParts,
+		Name:      f.opt.Enc.FromStandardName(leaf),
+		Type:      "file",
+		Path:      base,
+		MimeType:  fs.MimeType(ctx, src),
+		Size:      src.Size(),
+		Parts:     fileParts,
+		ChannelID: channelID,
 	}
 	err := f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, &payload, nil)
@@ -796,6 +810,7 @@ func (f *Fs) OpenChunkWriter(
 		src:           src,
 		o:             o,
 		totalParts:    totalParts,
+		channelID:     ui.channelID,
 	}
 	info = fs.ChunkWriterInfo{
 		ChunkSize:         int64(chunkSize),
@@ -1017,13 +1032,50 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	return resp.Body, err
 }
 
-// Copy src to this remote using server side move operations.
+// Copy src to this remote using server-side copy operations.
+//
+// This is stored with the remote path given.
+//
+// It returns the destination Object and a possible error.
+//
+// Will only be called if src.Fs().Name() == f.Name()
+//
+// If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	srcObj, ok := src.(*Object)
+	if !ok {
+		fs.Debugf(src, "Can't copy - not same remote type")
+		return nil, fs.ErrorCantCopy
+	}
 
-	return nil, nil
+	dstBase, dstLeaf := f.splitPathFull(remote)
+
+	srcBase, srcLeaf := srcObj.fs.splitPathFull(src.Remote())
+
+	if dstBase == srcBase && dstLeaf == srcLeaf {
+		fs.Debugf(src, "Can't copy - change file name")
+		return nil, fs.ErrorCantCopy
+	}
+
+	opts := rest.Opts{
+		Method: "POST",
+		Path:   "/api/files/copy",
+	}
+	copy := api.CopyFile{
+		ID:          srcObj.id,
+		Name:        dstLeaf,
+		Destination: dstBase,
+	}
+	var info api.FileInfo
+	err := f.pacer.Call(func() (bool, error) {
+		resp, err := f.srv.CallJSON(ctx, &opts, &copy, &info)
+		return shouldRetry(ctx, resp, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return f.newObjectWithInfo(ctx, remote, &info)
 }
-
-// ------------------------------------------------------------
 
 // Fs returns the parent Fs
 func (o *Object) Fs() fs.Info {

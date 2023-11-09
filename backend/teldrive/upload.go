@@ -21,6 +21,7 @@ import (
 type uploadInfo struct {
 	existingChunks []api.PartFile
 	uploadID       string
+	channelID      int64
 }
 
 type objectChunkWriter struct {
@@ -34,6 +35,7 @@ type objectChunkWriter struct {
 	existingParts   map[int]api.PartFile
 	o               *Object
 	totalParts      int64
+	channelID       int64
 }
 
 // WriteChunk will write chunk number with reader bytes, where chunk number >= 0
@@ -84,8 +86,9 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 			Body:          reader,
 			ContentLength: &size,
 			Parameters: url.Values{
-				"fileName": []string{name},
-				"partNo":   []string{strconv.Itoa(chunkNumber)},
+				"fileName":  []string{name},
+				"partNo":    []string{strconv.Itoa(chunkNumber)},
+				"channelId": []string{strconv.FormatInt(w.channelID, 10)},
 			},
 		}
 
@@ -147,12 +150,13 @@ func (w *objectChunkWriter) Close(ctx context.Context) error {
 	}
 
 	payload := api.CreateFileRequest{
-		Name:     w.f.opt.Enc.FromStandardName(leaf),
-		Type:     "file",
-		Path:     base,
-		MimeType: fs.MimeType(ctx, w.src),
-		Size:     w.src.Size(),
-		Parts:    fileParts,
+		Name:      w.f.opt.Enc.FromStandardName(leaf),
+		Type:      "file",
+		Path:      base,
+		MimeType:  fs.MimeType(ctx, w.src),
+		Size:      w.src.Size(),
+		Parts:     fileParts,
+		ChannelID: w.channelID,
 	}
 
 	err := w.f.pacer.Call(func() (bool, error) {
@@ -203,5 +207,11 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo, options [
 		return nil, err
 	}
 
-	return &uploadInfo{existingChunks: uploadParts.Parts, uploadID: uploadID}, nil
+	channelID := o.fs.opt.ChannelID
+
+	if len(uploadParts.Parts) > 0 {
+		channelID = uploadParts.Parts[0].ChannelID
+	}
+
+	return &uploadInfo{existingChunks: uploadParts.Parts, uploadID: uploadID, channelID: channelID}, nil
 }
