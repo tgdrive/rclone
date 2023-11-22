@@ -35,10 +35,12 @@ Here is an overview of the major features of each cloud storage system.
 | Internet Archive             | MD5, SHA1, CRC32  | R/W ¹¹  | No               | No              | -         | RWU      |
 | Jottacloud                   | MD5               | R/W     | Yes              | No              | R         | RW       |
 | Koofr                        | MD5               | -       | Yes              | No              | -         | -        |
+| Linkbox                      | -                 | R       | No               | No              | -         | -        |
 | Mail.ru Cloud                | Mailru ⁶          | R/W     | Yes              | No              | -         | -        |
 | Mega                         | -                 | -       | No               | Yes             | -         | -        |
 | Memory                       | MD5               | R/W     | No               | No              | -         | -        |
 | Microsoft Azure Blob Storage | MD5               | R/W     | No               | No              | R/W       | -        |
+| Microsoft Azure Files Storage | MD5              | R/W     | Yes              | No              | R/W       | -        |
 | Microsoft OneDrive           | QuickXorHash ⁵    | R/W     | Yes              | No              | R         | -        |
 | OpenDrive                    | MD5               | R/W     | Yes              | Partial ⁸       | -         | -        |
 | OpenStack Swift              | MD5               | R/W     | No               | No              | R/W       | -        |
@@ -53,7 +55,7 @@ Here is an overview of the major features of each cloud storage system.
 | Seafile                      | -                 | -       | No               | No              | -         | -        |
 | SFTP                         | MD5, SHA1 ²       | R/W     | Depends          | No              | -         | -        |
 | Sia                          | -                 | -       | No               | No              | -         | -        |
-| SMB                          | -                 | -       | Yes              | No              | -         | -        |
+| SMB                          | -                 | R/W     | Yes              | No              | -         | -        |
 | SugarSync                    | -                 | -       | No               | No              | -         | -        |
 | Storj                        | -                 | R       | No               | No              | -         | -        |
 | Uptobox                      | -                 | -       | No               | Yes             | -         | -        |
@@ -88,7 +90,7 @@ mistake or an unsupported feature.
 ⁹ QingStor does not support SetModTime for objects bigger than 5 GiB.
 
 ¹⁰ FTP supports modtimes for the major FTP servers, and also others
-if they advertised required protocol extensions. See [this](/ftp/#modified-time)
+if they advertised required protocol extensions. See [this](/ftp/#modification-times)
 for more details.
 
 ¹¹ Internet Archive requires option `wait_archive` to be set to a non-zero value
@@ -490,6 +492,7 @@ upon backend-specific capabilities.
 | Mega                         | Yes   | No   | Yes  | Yes     | Yes     | No    | No           | No                | Yes          | Yes   | Yes      |
 | Memory                       | No    | Yes  | No   | No      | No      | Yes   | Yes          | No                | No           | No    | No       |
 | Microsoft Azure Blob Storage | Yes   | Yes  | No   | No      | No      | Yes   | Yes          | Yes               | No           | No    | No       |
+| Microsoft Azure Files Storage | No   | Yes  | Yes  | Yes     | No      | No    | Yes          | Yes               | No           | Yes   | Yes      |
 | Microsoft OneDrive           | Yes   | Yes  | Yes  | Yes     | Yes     | Yes   | No           | No                | Yes          | Yes   | Yes      |
 | OpenDrive                    | Yes   | Yes  | Yes  | Yes     | No      | No    | No           | No                | No           | No    | Yes      |
 | OpenStack Swift              | Yes ¹ | Yes  | No   | No      | No      | Yes   | Yes          | No                | No           | Yes   | No       |

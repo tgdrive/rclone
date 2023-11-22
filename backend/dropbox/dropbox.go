@@ -946,6 +946,7 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) (err error)
 	if root == "/" {
 		return errors.New("can't remove root directory")
 	}
+	encRoot := f.opt.Enc.FromStandardPath(root)
 
 	if check {
 		// check directory exists
@@ -954,10 +955,9 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) (err error)
 			return fmt.Errorf("Rmdir: %w", err)
 		}
 
-		root = f.opt.Enc.FromStandardPath(root)
 		// check directory empty
 		arg := files.ListFolderArg{
-			Path:      root,
+			Path:      encRoot,
 			Recursive: false,
 		}
 		if root == "/" {
@@ -978,7 +978,7 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) (err error)
 
 	// remove it
 	err = f.pacer.Call(func() (bool, error) {
-		_, err = f.srv.DeleteV2(&files.DeleteArg{Path: root})
+		_, err = f.srv.DeleteV2(&files.DeleteArg{Path: encRoot})
 		return shouldRetry(ctx, err)
 	})
 	return err

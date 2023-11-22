@@ -17,3 +17,5 @@ __pycache__
 .vscode
 .DS_Store
 /docs/static/img/logos/
+resource_windows_*.syso
+.devcontainer

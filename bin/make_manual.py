@@ -53,11 +53,13 @@ docs = [
     "internetarchive.md",
     "jottacloud.md",
     "koofr.md",
+    "linkbox.md"
     "mailru.md",
     "mega.md",
     "memory.md",
     "netstorage.md",
     "azureblob.md",
+    "azurefiles.md",
     "onedrive.md",
     "opendrive.md",
     "oracleobjectstorage.md",
