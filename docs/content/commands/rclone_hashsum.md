@@ -49,7 +49,7 @@ Note that hash names are case insensitive and values are output in lower case.
 
 
 ```
-rclone hashsum <hash> remote:path [flags]
+rclone hashsum [<hash> remote:path] [flags]
 ```
 
 ## Options

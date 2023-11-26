@@ -455,6 +455,14 @@ func (f *Fs) setUploadCutoff(cs fs.SizeSuffix) (old fs.SizeSuffix, err error) {
 	return
 }
 
+func (f *Fs) setCopyCutoff(cs fs.SizeSuffix) (old fs.SizeSuffix, err error) {
+	err = checkUploadChunkSize(cs)
+	if err == nil {
+		old, f.opt.CopyCutoff = f.opt.CopyCutoff, cs
+	}
+	return
+}
+
 // setRoot changes the root of the Fs
 func (f *Fs) setRoot(root string) {
 	f.root = parsePath(root)
@@ -1330,7 +1338,7 @@ func (f *Fs) CleanUp(ctx context.Context) error {
 // If newInfo is nil then the metadata will be copied otherwise it
 // will be replaced with newInfo
 func (f *Fs) copy(ctx context.Context, dstObj *Object, srcObj *Object, newInfo *api.File) (err error) {
-	if srcObj.size >= int64(f.opt.CopyCutoff) {
+	if srcObj.size > int64(f.opt.CopyCutoff) {
 		if newInfo == nil {
 			newInfo, err = srcObj.getMetaData(ctx)
 			if err != nil {

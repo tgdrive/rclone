@@ -78,6 +78,13 @@ type SetUploadCutoffer interface {
 	SetUploadCutoff(fs.SizeSuffix) (fs.SizeSuffix, error)
 }
 
+// SetCopyCutoffer is a test only interface to change the copy cutoff size at runtime
+type SetCopyCutoffer interface {
+	// Change the configured CopyCutoff.
+	// Will only be called while no transfer is in progress.
+	SetCopyCutoff(fs.SizeSuffix) (fs.SizeSuffix, error)
+}
+
 // NextPowerOfTwo returns the current or next bigger power of two.
 // All values less or equal 0 will return 0
 func NextPowerOfTwo(i fs.SizeSuffix) fs.SizeSuffix {
@@ -223,8 +230,10 @@ func testPutMimeType(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.It
 	return contents, PutTestContentsMetadata(ctx, t, f, file, contents, true, mimeType, metadata)
 }
 
-// TestPutLarge puts file to the remote, checks it and removes it on success.
-func TestPutLarge(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item) {
+// testPutLarge puts file to the remote, checks it and removes it on success.
+//
+// If stream is set, then it uploads the file with size -1
+func testPutLarge(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item, stream bool) {
 	var (
 		err        error
 		obj        fs.Object
@@ -235,7 +244,11 @@ func TestPutLarge(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item)
 		uploadHash = hash.NewMultiHasher()
 		in := io.TeeReader(r, uploadHash)
 
-		obji := object.NewStaticObjectInfo(file.Path, file.ModTime, file.Size, true, nil, nil)
+		size := file.Size
+		if stream {
+			size = -1
+		}
+		obji := object.NewStaticObjectInfo(file.Path, file.ModTime, size, true, nil, nil)
 		obj, err = f.Put(ctx, in, obji)
 		if file.Size == 0 && err == fs.ErrorCantUploadEmptyFiles {
 			t.Skip("Can't upload zero length files")
@@ -261,6 +274,16 @@ func TestPutLarge(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item)
 
 	// Remove the object
 	require.NoError(t, obj.Remove(ctx))
+}
+
+// TestPutLarge puts file to the remote, checks it and removes it on success.
+func TestPutLarge(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item) {
+	testPutLarge(ctx, t, f, file, false)
+}
+
+// TestPutLargeStreamed puts file of unknown size to the remote, checks it and removes it on success.
+func TestPutLargeStreamed(ctx context.Context, t *testing.T, f fs.Fs, file *fstest.Item) {
+	testPutLarge(ctx, t, f, file, true)
 }
 
 // ReadObject reads the contents of an object as a string
@@ -2090,8 +2113,101 @@ func Run(t *testing.T, opt *Opt) {
 								Path:    fmt.Sprintf("chunked-%s-%s.bin", cs.String(), fileSize.String()),
 								Size:    int64(fileSize),
 							})
+							t.Run("Streamed", func(t *testing.T) {
+								if f.Features().PutStream == nil {
+									t.Skip("FS has no PutStream interface")
+								}
+								TestPutLargeStreamed(ctx, t, f, &fstest.Item{
+									ModTime: fstest.Time("2001-02-03T04:05:06.499999999Z"),
+									Path:    fmt.Sprintf("chunked-%s-%s-streamed.bin", cs.String(), fileSize.String()),
+									Size:    int64(fileSize),
+								})
+							})
 						})
 					}
+				})
+			}
+		})
+
+		// Copy files with chunked copy if available
+		t.Run("FsCopyChunked", func(t *testing.T) {
+			skipIfNotOk(t)
+			if testing.Short() {
+				t.Skip("not running with -short")
+			}
+
+			// Check have Copy
+			doCopy := f.Features().Copy
+			if doCopy == nil {
+				t.Skip("FS has no Copier interface")
+			}
+
+			if opt.ChunkedUpload.Skip {
+				t.Skip("skipping as ChunkedUpload.Skip is set")
+			}
+
+			if strings.HasPrefix(f.Name(), "serves3") || strings.HasPrefix(f.Name(), "TestS3Rclone") {
+				t.Skip("FIXME skip test - see #7454")
+			}
+
+			do, _ := f.(SetCopyCutoffer)
+			if do == nil {
+				t.Skipf("%T does not implement SetCopyCutoff", f)
+			}
+
+			minChunkSize := opt.ChunkedUpload.MinChunkSize
+			if minChunkSize < 100 {
+				minChunkSize = 100
+			}
+			if opt.ChunkedUpload.CeilChunkSize != nil {
+				minChunkSize = opt.ChunkedUpload.CeilChunkSize(minChunkSize)
+			}
+
+			chunkSizes := fs.SizeSuffixList{
+				minChunkSize,
+				minChunkSize + 1,
+				2*minChunkSize - 1,
+				2 * minChunkSize,
+				2*minChunkSize + 1,
+			}
+			for _, chunkSize := range chunkSizes {
+				t.Run(fmt.Sprintf("%d", chunkSize), func(t *testing.T) {
+					contents := random.String(int(chunkSize))
+					item := fstest.NewItem("chunked-copy", contents, fstest.Time("2001-05-06T04:05:06.499999999Z"))
+					src := PutTestContents(ctx, t, f, &item, contents, true)
+					defer func() {
+						assert.NoError(t, src.Remove(ctx))
+					}()
+
+					var itemCopy = item
+					itemCopy.Path += ".copy"
+
+					// Set copy cutoff to mininum value so we make chunks
+					origCutoff, err := do.SetCopyCutoff(minChunkSize)
+					require.NoError(t, err)
+					defer func() {
+						_, err = do.SetCopyCutoff(origCutoff)
+						require.NoError(t, err)
+					}()
+
+					// Do the copy
+					dst, err := doCopy(ctx, src, itemCopy.Path)
+					require.NoError(t, err)
+					defer func() {
+						assert.NoError(t, dst.Remove(ctx))
+					}()
+
+					// Check size
+					assert.Equal(t, src.Size(), dst.Size())
+
+					// Check modtime
+					srcModTime := src.ModTime(ctx)
+					dstModTime := dst.ModTime(ctx)
+					assert.True(t, srcModTime.Equal(dstModTime))
+
+					// Make sure contents are correct
+					gotContents := ReadObject(ctx, t, dst, -1)
+					assert.Equal(t, contents, gotContents)
 				})
 			}
 		})

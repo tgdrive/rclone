@@ -50,10 +50,11 @@ docs = [
     "hdfs.md",
     "hidrive.md",
     "http.md",
+    "imagekit.md",
     "internetarchive.md",
     "jottacloud.md",
     "koofr.md",
-    "linkbox.md"
+    "linkbox.md",
     "mailru.md",
     "mega.md",
     "memory.md",

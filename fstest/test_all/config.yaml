@@ -148,6 +148,9 @@ backends:
  - backend: "hidrive"
    remote:   "TestHiDrive:"
    fastlist: false
+ - backend:  "imagekit"
+   remote:   "TestImageKit:"
+   fastlist: false
  - backend:  "internetarchive"
    remote:   "TestIA:rclone-integration-test"
    fastlist: true
@@ -181,6 +184,9 @@ backends:
    fastlist: true
  - backend:  "s3"
    remote:   "TestS3,directory_markers:"
+   fastlist: true
+ - backend:  "s3"
+   remote:   "TestS3Rclone:"
    fastlist: true
  - backend:  "s3"
    remote:   "TestS3Minio:"

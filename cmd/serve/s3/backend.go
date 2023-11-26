@@ -84,7 +84,10 @@ func (b *s3Backend) ListBucket(bucket string, prefix *gofakes3.Prefix, page gofa
 		err = b.entryListR(bucket, path, remaining, prefix.HasDelimiter, response)
 	}
 
-	if err != nil {
+	if err == gofakes3.ErrNoSuchKey {
+		// AWS just returns an empty list
+		response = gofakes3.NewObjectList()
+	} else if err != nil {
 		return nil, err
 	}
 
@@ -277,11 +280,6 @@ func (b *s3Backend) PutObject(
 		if err := mkdirRecursive(objectDir, b.vfs); err != nil {
 			return result, err
 		}
-	}
-
-	if size == 0 {
-		// maybe a touch operation
-		return b.TouchObject(fp, meta)
 	}
 
 	f, err := b.vfs.Create(fp)
