@@ -503,7 +503,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/movefiles",
+		Path:   "/api/files/move",
 	}
 
 	mv := api.MoveFileRequest{
@@ -829,7 +829,7 @@ func (f *Fs) CreateDir(ctx context.Context, base string, leaf string) (err error
 	var apiErr api.Error
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/makedir",
+		Path:   "/api/files/directories",
 	}
 
 	dir := base
@@ -869,7 +869,7 @@ func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 	var resp *http.Response
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/deletefiles",
+		Path:   "/api/files/delete",
 	}
 	rm := api.RemoveFileRequest{
 		Files: []string{folderID},
@@ -968,7 +968,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/movedir",
+		Path:   "/api/files/directories/move",
 	}
 	move := api.DirMove{
 		Source:      srcPath,
@@ -989,7 +989,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 func (o *Object) Remove(ctx context.Context) error {
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/deletefiles",
+		Path:   "/api/files/delete",
 	}
 	delete := api.RemoveFileRequest{
 		Files: []string{o.id},
@@ -1014,7 +1014,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	fs.FixRangeOption(options, o.size)
 	opts := rest.Opts{
 		Method:  "GET",
-		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
+		Path:    fmt.Sprintf("/api/files/%s/stream/%s", o.id, url.QueryEscape(o.name)),
 		Options: options,
 		Parameters: url.Values{
 			"hash": []string{o.fs.authHash},
