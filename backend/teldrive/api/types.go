@@ -103,6 +103,7 @@ type PartFile struct {
 	TotalParts int    `json:"totalParts"`
 	Size       int64  `json:"size"`
 	ChannelID  int64  `json:"channelId"`
+	Encrypted bool   `json:"encrypted"`
 }
 
 type FilePart struct {
@@ -116,6 +117,7 @@ type CreateFileRequest struct {
 	MimeType  string     `json:"mimeType"`
 	Size      int64      `json:"size"`
 	ChannelID int64      `json:"channelId"`
+	Encrypted bool       `json:"encrypted"`
 	Parts     []FilePart `json:"parts"`
 	CreatedAt string     `json:"createdAt,omitempty"`
 	UpdatedAt string     `json:"updatedAt,omitempty"`

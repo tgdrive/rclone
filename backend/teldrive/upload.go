@@ -22,6 +22,7 @@ type uploadInfo struct {
 	existingChunks []api.PartFile
 	uploadID       string
 	channelID      int64
+	encryptFile    bool
 }
 
 type objectChunkWriter struct {
@@ -36,6 +37,7 @@ type objectChunkWriter struct {
 	o               *Object
 	totalParts      int64
 	channelID       int64
+	encryptFile     bool
 }
 
 // WriteChunk will write chunk number with reader bytes, where chunk number >= 0
@@ -89,6 +91,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 				"fileName":  []string{name},
 				"partNo":    []string{strconv.Itoa(chunkNumber)},
 				"channelId": []string{strconv.FormatInt(w.channelID, 10)},
+				"encrypted": []string{strconv.FormatBool(w.encryptFile)},
 			},
 		}
 
@@ -157,6 +160,7 @@ func (w *objectChunkWriter) Close(ctx context.Context) error {
 		Size:      w.src.Size(),
 		Parts:     fileParts,
 		ChannelID: w.channelID,
+		Encrypted: w.encryptFile,
 	}
 
 	err := w.f.pacer.Call(func() (bool, error) {
@@ -209,9 +213,17 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo, options [
 
 	channelID := o.fs.opt.ChannelID
 
+	encryptFile := o.fs.opt.EncryptFiles
+
 	if len(uploadParts.Parts) > 0 {
 		channelID = uploadParts.Parts[0].ChannelID
+		encryptFile = uploadParts.Parts[0].Encrypted
 	}
 
-	return &uploadInfo{existingChunks: uploadParts.Parts, uploadID: uploadID, channelID: channelID}, nil
+	return &uploadInfo{
+		existingChunks: uploadParts.Parts,
+		uploadID:       uploadID,
+		channelID:      channelID,
+		encryptFile:    encryptFile,
+	}, nil
 }

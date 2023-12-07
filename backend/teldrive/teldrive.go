@@ -73,18 +73,23 @@ func init() {
 			Default:  4,
 			Help:     "Upload Concurrency",
 			Advanced: true,
-		}, {
+		},
+			{
+				Name:    "encrypt_files",
+				Default: true,
+				Help:    "Enable Native  Teldrive Encryption",
+			}, {
 
-			Name:     config.ConfigEncoding,
-			Help:     config.ConfigEncodingHelp,
-			Advanced: true,
-			Default: (encoder.Display |
-				encoder.EncodeBackQuote |
-				encoder.EncodeDoubleQuote |
-				encoder.EncodeLtGt |
-				encoder.EncodeLeftSpace |
-				encoder.EncodeInvalidUtf8),
-		}},
+				Name:     config.ConfigEncoding,
+				Help:     config.ConfigEncodingHelp,
+				Advanced: true,
+				Default: (encoder.Display |
+					encoder.EncodeBackQuote |
+					encoder.EncodeDoubleQuote |
+					encoder.EncodeLtGt |
+					encoder.EncodeLeftSpace |
+					encoder.EncodeInvalidUtf8),
+			}},
 	})
 }
 
@@ -96,6 +101,7 @@ type Options struct {
 	RandomisePart     bool                 `config:"randomise_part"`
 	UploadConcurrency int                  `config:"upload_concurrency"`
 	ChannelID         int64                `config:"channel_id"`
+	EncryptFiles      bool                 `config:"encrypt_files"`
 	Enc               encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -597,8 +603,12 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 
 	channelID := f.opt.ChannelID
 
+	encryptFile := f.opt.EncryptFiles
+
 	if len(uploadFile.Parts) > 0 {
 		channelID = uploadFile.Parts[0].ChannelID
+
+		encryptFile = uploadFile.Parts[0].Encrypted
 	}
 
 	for partNo := 1; partNo <= int(totalParts); partNo++ {
@@ -631,6 +641,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 				"fileName":  []string{name},
 				"partNo":    []string{strconv.Itoa(partNo)},
 				"channelId": []string{strconv.FormatInt(channelID, 10)},
+				"encrypted": []string{strconv.FormatBool(encryptFile)},
 			},
 		}
 
@@ -673,6 +684,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		Size:      src.Size(),
 		Parts:     fileParts,
 		ChannelID: channelID,
+		Encrypted: encryptFile,
 	}
 	err := f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, &payload, nil)
@@ -811,6 +823,7 @@ func (f *Fs) OpenChunkWriter(
 		o:             o,
 		totalParts:    totalParts,
 		channelID:     ui.channelID,
+		encryptFile:   ui.encryptFile,
 	}
 	info = fs.ChunkWriterInfo{
 		ChunkSize:         int64(chunkSize),
