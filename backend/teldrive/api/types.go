@@ -103,11 +103,13 @@ type PartFile struct {
 	TotalParts int    `json:"totalParts"`
 	Size       int64  `json:"size"`
 	ChannelID  int64  `json:"channelId"`
-	Encrypted bool   `json:"encrypted"`
+	Encrypted  bool   `json:"encrypted"`
+	Salt       string `json:"salt"`
 }
 
 type FilePart struct {
-	ID int `json:"id"`
+	ID   int    `json:"id"`
+	Salt string `json:"salt"`
 }
 
 type CreateFileRequest struct {

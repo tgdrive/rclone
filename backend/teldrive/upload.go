@@ -149,7 +149,7 @@ func (w *objectChunkWriter) Close(ctx context.Context) error {
 	fileParts := []api.FilePart{}
 
 	for _, part := range w.partsToCommit {
-		fileParts = append(fileParts, api.FilePart{ID: part.PartId})
+		fileParts = append(fileParts, api.FilePart{ID: part.PartId, Salt: part.Salt})
 	}
 
 	payload := api.CreateFileRequest{

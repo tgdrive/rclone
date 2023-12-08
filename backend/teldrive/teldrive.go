@@ -673,7 +673,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 	fileParts := []api.FilePart{}
 
 	for _, part := range partsToCommit {
-		fileParts = append(fileParts, api.FilePart{ID: part.PartId})
+		fileParts = append(fileParts, api.FilePart{ID: part.PartId, Salt: part.Salt})
 	}
 
 	payload := api.CreateFileRequest{
