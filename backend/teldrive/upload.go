@@ -55,7 +55,14 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		return existing.Size, nil
 	}
 
-	var response api.PartFile
+	var
+	(
+		response api.PartFile
+		partName string
+		fileName string
+	)
+
+	_, fileName = w.f.splitPathFull(w.src.Remote())
 
 	err = w.f.pacer.Call(func() (bool, error) {
 
@@ -71,14 +78,13 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		}
 
 		fs.Debugf(w.o, "Sending chunk %d length %d", chunkNumber, size)
-		var name string
 		if w.f.opt.RandomisePart {
 			u1, _ := uuid.NewV4()
-			name = hex.EncodeToString(u1.Bytes())
+			partName = hex.EncodeToString(u1.Bytes())
 		} else {
-			_, name = w.f.splitPathFull(w.src.Remote())
+			
 			if w.totalParts > 1 {
-				name = fmt.Sprintf("%s.part.%03d", name, chunkNumber)
+				partName = fmt.Sprintf("%s.part.%03d", fileName, chunkNumber)
 			}
 		}
 
@@ -88,7 +94,8 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 			Body:          reader,
 			ContentLength: &size,
 			Parameters: url.Values{
-				"fileName":  []string{name},
+				"partName":  []string{partName},
+				"fileName":  []string{fileName},
 				"partNo":    []string{strconv.Itoa(chunkNumber)},
 				"channelId": []string{strconv.FormatInt(w.channelID, 10)},
 				"encrypted": []string{strconv.FormatBool(w.encryptFile)},
