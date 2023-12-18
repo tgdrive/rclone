@@ -261,18 +261,29 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		Path:   "/api/auth/session",
 	}
 
-	var session api.Session
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, nil, &session)
-		return shouldRetry(ctx, resp, err)
-	})
+	var
+	(
+		session api.Session
+		sessionResp *http.Response
+	)
 
+	err = f.pacer.Call(func() (bool, error) {
+		sessionResp, err = f.srv.CallJSON(ctx, &opts, nil, &session)
+		return shouldRetry(ctx, sessionResp, err)
+	})
+	
 	if err != nil {
 		return nil, err
 	}
 
 	if session.Hash == "" {
 		return nil, fmt.Errorf("invalid session token")
+	}
+
+	for _, cookie := range sessionResp.Cookies() {
+		if cookie.Name == "user-session" {
+			config.Set("access_token", cookie.Value)
+		}
 	}
 
 	f.authHash = session.Hash
