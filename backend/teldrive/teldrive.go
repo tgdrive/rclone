@@ -76,7 +76,7 @@ func init() {
 		},
 			{
 				Name:    "encrypt_files",
-				Default: true,
+				Default: false,
 				Help:    "Enable Native  Teldrive Encryption",
 			}, {
 
