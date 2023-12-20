@@ -160,3 +160,11 @@ type RemoveFileRequest struct {
 type Token struct {
 	Token string `json:"token"`
 }
+
+type Session struct {
+	User struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Image string `json:"image"`
+	} `json:"user"`
+}

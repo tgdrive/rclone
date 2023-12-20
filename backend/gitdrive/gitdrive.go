@@ -243,8 +243,38 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	}).Fill(ctx, f)
 
 	client := fshttp.NewClient(ctx)
-	authCookie := http.Cookie{Name: "__Secure-next-auth.session-token", Value: opt.SessionToken}
+	authCookie := http.Cookie{Name: "__Secure-authjs.session-token", Value: opt.SessionToken}
 	f.srv = rest.NewClient(client).SetRoot(opt.ApiHost).SetCookie(&authCookie)
+
+	opts := rest.Opts{
+		Method: "GET",
+		Path:   "/api/auth/session",
+	}
+
+	var
+	(
+		session api.Session
+		sessionResp *http.Response
+	)
+
+	err = f.pacer.Call(func() (bool, error) {
+		sessionResp, err = f.srv.CallJSON(ctx, &opts, nil, &session)
+		return shouldRetry(ctx, sessionResp, err)
+	})
+	
+	if err != nil {
+		return nil, err
+	}
+
+	if session.User.Email == "" {
+		return nil, fmt.Errorf("invalid session token")
+	}
+
+	for _, cookie := range sessionResp.Cookies() {
+		if cookie.Name == "__Secure-authjs.session-token" {
+			config.Set("session_token", cookie.Value)
+		}
+	}
 
 	dir, base := f.splitPathFull("")
 
@@ -479,7 +509,7 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/movefiles",
+		Path:   "/api/files/move",
 	}
 
 	mv := api.MoveFileRequest{
@@ -877,7 +907,7 @@ func (f *Fs) CreateDir(ctx context.Context, base string, leaf string) (err error
 	var apiErr api.Error
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/makedir",
+		Path:   "/api/files/directories",
 	}
 
 	dir := base
@@ -917,7 +947,7 @@ func (f *Fs) purge(ctx context.Context, folderID string) (err error) {
 	var resp *http.Response
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/deletefiles",
+		Path:   "/api/files/delete",
 	}
 	rm := api.RemoveFileRequest{
 		Files: []string{folderID},
@@ -961,7 +991,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	} else {
 		opts = rest.Opts{
 			Method:  "GET",
-			Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
+			Path:    fmt.Sprintf("/api/files/stream/%s/%s", o.id, url.QueryEscape(o.name)),
 			Options: options,
 		}
 	}
@@ -1051,7 +1081,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/movedir",
+		Path:   "/api/files/directories/move",
 	}
 	move := api.DirMove{
 		Source:      srcPath,
@@ -1078,7 +1108,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 func (o *Object) Remove(ctx context.Context) error {
 	opts := rest.Opts{
 		Method: "POST",
-		Path:   "/api/files/deletefiles",
+		Path:   "/api/files/delete",
 	}
 	delete := api.RemoveFileRequest{
 		Files: []string{o.id},
