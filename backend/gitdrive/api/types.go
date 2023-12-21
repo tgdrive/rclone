@@ -71,12 +71,6 @@ type DirMove struct {
 	Destination string `json:"destination"`
 }
 
-// UpdateResponse is a generic response to various action on files (rename/copy/move)
-type UpdateResponse struct {
-	Message string `json:"message,omitempty"`
-	Status  bool   `json:"status"`
-}
-
 // Download is the response when requesting a download link
 type Download struct {
 	StatusCode int    `json:"statusCode"`

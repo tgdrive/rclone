@@ -518,9 +518,8 @@ func (f *Fs) move(ctx context.Context, dstPath string, fileID string) (err error
 	}
 
 	var resp *http.Response
-	var info api.UpdateResponse
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, &mv, &info)
+		resp, err = f.srv.CallJSON(ctx, &opts, &mv, nil)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -537,9 +536,8 @@ func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileIn
 	}
 
 	var resp *http.Response
-	var info api.UpdateResponse
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, update, &info)
+		resp, err = f.srv.CallJSON(ctx, &opts, update, nil)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -1032,12 +1030,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 
 	// do the move if required
 	if needMove {
-		err := f.CreateDir(ctx, dstBase, "")
-		if err != nil {
-			return nil, fmt.Errorf("move: failed to make destination dirs: %w", err)
-		}
-
-		err = f.move(ctx, dstBase, srcObj.id)
+		err := f.move(ctx, dstBase, srcObj.id)
 		if err != nil {
 			return nil, err
 		}
@@ -1113,9 +1106,8 @@ func (o *Object) Remove(ctx context.Context) error {
 	delete := api.RemoveFileRequest{
 		Files: []string{o.id},
 	}
-	var info api.UpdateResponse
 	err := o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, &info)
+		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, nil)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
