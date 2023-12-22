@@ -944,12 +944,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 
 	// do the move if required
 	if needMove {
-		err := f.CreateDir(ctx, dstBase, "")
-		if err != nil {
-			return nil, fmt.Errorf("move: failed to make destination dirs: %w", err)
-		}
-
-		err = f.move(ctx, dstBase, srcObj.id)
+		err := f.move(ctx, dstBase, srcObj.id)
 		if err != nil {
 			return nil, err
 		}
