@@ -620,7 +620,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in0 io.Reader, src fs.ObjectInfo,
 		encryptFile = uploadFile.Parts[0].Encrypted
 	}
 
-	var partName string
+	partName := leaf
 
 	for partNo := 1; partNo <= int(totalParts); partNo++ {
 
