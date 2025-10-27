@@ -129,7 +129,7 @@ jobs:
           make cross
 
       - name: Upload Binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rclone-${{ matrix.job_name }}
           path: ${{ github.workspace }}/build/**/*
@@ -178,7 +178,7 @@ jobs:
           zip -r rclone-${{ github.ref_name }}-android-arm64.zip rclone
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: rclone-android
           path: ${{ github.workspace }}/build/rclone-*.zip
