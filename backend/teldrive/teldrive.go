@@ -4,6 +4,7 @@ package teldrive
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/backend/teldrive/api"
+	"github.com/rclone/rclone/backend/teldrive/tdhash"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
@@ -23,6 +25,7 @@ import (
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/object"
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/pacer"
@@ -32,15 +35,13 @@ import (
 
 const (
 	timeFormat       = time.RFC3339
-	maxChunkSize     = 2000 * fs.Mebi
-	defaultChunkSize = 500 * fs.Mebi
-	minChunkSize     = 100 * fs.Mebi
+	maxChunkSize     = 2000 * fs.Mebi // 125 × 16MB (Telegram limit)
+	defaultChunkSize = 512 * fs.Mebi  // 32 × 16MB for optimal BLAKE3 tree hashing
+	minChunkSize     = 64 * fs.Mebi   // 4 × 16MB
 	authCookieName   = "access_token"
 )
 
-var (
-	errCanNotUploadFileWithUnknownSize = errors.New("teldrive can't upload files with unknown size")
-)
+var telDriveHash hash.Type
 
 func init() {
 	fs.Register(&fs.RegInfo{
@@ -93,14 +94,21 @@ func init() {
 				Name:    "encrypt_files",
 				Default: false,
 				Help:    "Enable Native Teldrive Encryption",
-			}, {
-
+			},
+			{
+				Name:    "hash_enabled",
+				Default: true,
+				Help:    "Enable Blake3 Tree Hashing",
+			},
+			{
 				Name:     config.ConfigEncoding,
 				Help:     config.ConfigEncodingHelp,
 				Advanced: true,
 				Default:  encoder.Standard | encoder.EncodeInvalidUtf8,
 			}},
 	})
+
+	telDriveHash = hash.RegisterHash("teldrive", "TelDriveHash", tdhash.Size, tdhash.New)
 }
 
 // Options defines the configuration for this backend
@@ -115,7 +123,7 @@ type Options struct {
 	ChannelID         int64                `config:"channel_id"`
 	EncryptFiles      bool                 `config:"encrypt_files"`
 	PageSize          int64                `config:"page_size"`
-	ThreadedStreams   bool                 `config:"threaded_streams"`
+	HashEnabled       bool                 `config:"hash_enabled"`
 	Enc               encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -127,6 +135,7 @@ type Fs struct {
 	features     *fs.Features
 	srv          *rest.Client
 	pacer        *fs.Pacer
+	ssePacer     *fs.Pacer // Dedicated pacer for SSE connection retries
 	userId       int64
 	dirCache     *dircache.DirCache
 	rootFolderID string
@@ -142,6 +151,7 @@ type Object struct {
 	name     string
 	modTime  time.Time
 	mimeType string
+	hash     string // BLAKE3 tree hash from server
 }
 
 // Name of the remote (as passed into NewFs)
@@ -165,8 +175,13 @@ func (f *Fs) Precision() time.Duration {
 }
 
 // Hashes returns the supported hash types of the filesystem
+// TelDrive uses BLAKE3 tree hashing only (16MB fixed blocks)
 func (f *Fs) Hashes() hash.Set {
-	return hash.Set(hash.None)
+	if f.opt.HashEnabled {
+		return hash.Set(telDriveHash)
+	}
+	return hash.NewHashSet(hash.None)
+
 }
 
 // Features returns the optional features of this Fs
@@ -193,14 +208,16 @@ func shouldRetry(ctx context.Context, resp *http.Response, err error) (bool, err
 	return fserrors.ShouldRetry(err) || fserrors.ShouldRetryHTTP(resp, retryErrorCodes), err
 }
 
-func checkUploadChunkSize(cs fs.SizeSuffix) error {
-	if cs < minChunkSize {
-		return fmt.Errorf("ChunkSize: %s is less than %s", cs, minChunkSize)
-	}
-	if cs > maxChunkSize {
-		return fmt.Errorf("ChunkSize: %s is greater than %s", cs, maxChunkSize)
-	}
-	return nil
+// alignChunkSize rounds the chunk size to the nearest 16MB multiple
+// and clamps it to min/max bounds
+func alignChunkSize(cs fs.SizeSuffix) fs.SizeSuffix {
+	blockSize := int64(16 * 1024 * 1024) // 16MB
+	chunkSizeBytes := min(max(int64(cs), int64(minChunkSize)), int64(maxChunkSize))
+	// Round to nearest 16MB multiple
+	// Ensure we don't exceed max after rounding
+	alignedSize := min(((chunkSizeBytes+blockSize/2)/blockSize)*blockSize, int64(maxChunkSize))
+
+	return fs.SizeSuffix(alignedSize)
 }
 
 func Ptr[T any](t T) *T {
@@ -223,14 +240,18 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		return nil, err
 	}
 
-	err = checkUploadChunkSize(opt.ChunkSize)
-	if err != nil {
-		return nil, err
-	}
+	// Align chunk size to 16MB multiple for optimal BLAKE3 tree hashing
+	opt.ChunkSize = alignChunkSize(opt.ChunkSize)
 
 	if opt.ChannelID < 0 {
-		channnelId := strconv.FormatInt(opt.ChannelID, 10)
-		opt.ChannelID, _ = strconv.ParseInt(strings.TrimPrefix(channnelId, "-100"), 10, 64)
+		channelIDStr := strconv.FormatInt(opt.ChannelID, 10)
+		// teldrive API expects channel ID without the -100 prefix for supergroups/channels
+		trimmedIDStr := strings.TrimPrefix(channelIDStr, "-100")
+		newID, err := strconv.ParseInt(trimmedIDStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid channel_id: %w", err)
+		}
+		opt.ChannelID = newID
 	}
 
 	f := &Fs{
@@ -238,6 +259,12 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		root:  root,
 		opt:   *opt,
 		pacer: fs.NewPacer(ctx, pacer.NewDefault()),
+		// Dedicated SSE pacer with optimized settings for connection retries
+		ssePacer: fs.NewPacer(ctx, pacer.NewDefault(
+			pacer.MinSleep(1*time.Second),
+			pacer.MaxSleep(30*time.Second),
+			pacer.DecayConstant(2),
+		)),
 	}
 
 	f.root = strings.Trim(root, "/")
@@ -498,6 +525,7 @@ func (f *Fs) newObjectWithInfo(_ context.Context, remote string, info *api.FileI
 		name:     info.Name,
 		modTime:  info.ModTime,
 		mimeType: info.MimeType,
+		hash:     info.Hash,
 	}
 	if info.Type == "folder" {
 		return o, fs.ErrorIsDir
@@ -601,14 +629,28 @@ func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileIn
 }
 
 func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, _ ...fs.OpenOption) error {
-
 	o := &Object{
 		fs: f,
 	}
-	uploadInfo, err := o.uploadMultipart(ctx, bufio.NewReader(in), src)
 
-	if err != nil {
-		return err
+	var uploadInfo *uploadInfo
+	var err error
+	size := src.Size()
+
+	if size < 0 {
+		// Unknown size - buffer to memory/temp file first
+		fs.Debugf(f, "putUnchecked: unknown size, buffering to memory (threshold: %d bytes)", memoryBufferThreshold)
+		uploadInfo, size, err = o.uploadWithBuffering(ctx, in, src)
+		if err != nil {
+			return err
+		}
+		// Create new src with known size for createFile
+		src = object.NewStaticObjectInfo(src.Remote(), src.ModTime(ctx), size, false, nil, f)
+	} else if size > 0 {
+		uploadInfo, err = o.uploadMultipart(ctx, in, src)
+		if err != nil {
+			return err
+		}
 	}
 
 	return o.createFile(ctx, src, uploadInfo)
@@ -639,9 +681,6 @@ func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (pathIDOut strin
 // will return the object and the error, otherwise will return
 // nil and the error
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	if src.Size() < 0 {
-		return nil, errCanNotUploadFileWithUnknownSize
-	}
 	existingObj, err := f.NewObject(ctx, src.Remote())
 	switch err {
 	case nil:
@@ -672,13 +711,7 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 //
 // The new object may have been created if an error is returned
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
-
-	if src.Size() < 0 {
-		return errCanNotUploadFileWithUnknownSize
-	}
-
 	remote := o.Remote()
-
 	modTime := src.ModTime(ctx)
 
 	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, remote, true)
@@ -687,9 +720,17 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 
 	var uploadInfo *uploadInfo
+	size := src.Size()
 
-	if src.Size() > 0 {
-		uploadInfo, err = o.uploadMultipart(ctx, bufio.NewReader(in), src)
+	if size < 0 {
+		// Unknown size - buffer to memory/temp file first
+		fs.Debugf(o, "Update: unknown size, buffering to memory (threshold: %d bytes)", memoryBufferThreshold)
+		uploadInfo, size, err = o.uploadWithBuffering(ctx, in, src)
+		if err != nil {
+			return err
+		}
+	} else if size > 0 {
+		uploadInfo, err = o.uploadMultipart(ctx, in, src)
 		if err != nil {
 			return err
 		}
@@ -697,21 +738,20 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	payload := &api.UpdateFileInformation{
 		ModTime:  Ptr(modTime.UTC()),
-		Size:     src.Size(),
+		Size:     size,
 		ParentID: directoryID,
 		Name:     leaf,
 	}
 
 	if uploadInfo != nil {
-		payload.Parts = uploadInfo.fileChunks
 		payload.UploadId = uploadInfo.uploadID
-		payload.ChannelID = o.fs.opt.ChannelID
+		payload.ChannelID = uploadInfo.channelID
 		payload.Encrypted = uploadInfo.encryptFile
 	}
 
 	opts := rest.Opts{
-		Method:     "PUT",
-		Path:       "/api/files/" + o.id + "/parts",
+		Method:     "PATCH",
+		Path:       "/api/files/" + o.id,
 		NoResponse: true,
 	}
 
@@ -725,103 +765,194 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 
 	o.modTime = modTime
-
-	o.size = src.Size()
+	o.size = size
 
 	return nil
 }
 
 // ChangeNotify calls the passed function with a path that has had changes.
-// If the implementation uses polling, it should adhere to the given interval.
-//
-// Automatically restarts itself in case of unexpected behavior of the remote.
-//
-// Close the returned channel to stop being notified.
 func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryType), pollIntervalChan <-chan time.Duration) {
 	go func() {
-		processedEventIDs := make(map[string]time.Time)
-		var ticker *time.Ticker
-		var tickerC <-chan time.Time
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case pollInterval, ok := <-pollIntervalChan:
 				if !ok {
-					if ticker != nil {
-						ticker.Stop()
-					}
+					fs.Debugf(f, "ChangeNotify: channel closed, stopping")
 					return
 				}
-				if ticker != nil {
-					ticker.Stop()
-					ticker, tickerC = nil, nil
+				if pollInterval > 0 {
+					fs.Debugf(f, "ChangeNotify: poll interval set but SSE is active, ignoring")
 				}
-				if pollInterval != 0 {
-					ticker = time.NewTicker(pollInterval)
-					tickerC = ticker.C
-				}
-			case <-tickerC:
-				fs.Debugf(f, "Checking for changes on remote")
-				for eventID, timestamp := range processedEventIDs {
-					if time.Since(timestamp) > 5*time.Minute {
-						delete(processedEventIDs, eventID)
-					}
-				}
-				err := f.changeNotifyRunner(ctx, notifyFunc, processedEventIDs)
+			default:
+				fs.Debugf(f, "Starting SSE event stream")
+				err := f.changeNotifySSE(ctx, notifyFunc)
 				if err != nil {
-					fs.Infof(f, "Change notify listener failure: %s", err)
+					fs.Infof(f, "SSE connection failed permanently: %s", err)
+					return
 				}
 			}
 		}
 	}()
 }
 
-func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.EntryType), processedEventIDs map[string]time.Time) error {
+func isFatalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "401") ||
+		strings.Contains(errStr, "403") ||
+		strings.Contains(errStr, "404")
+}
 
-	var changes []api.Event
+func (f *Fs) changeNotifySSE(ctx context.Context, notifyFunc func(string, fs.EntryType)) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 
+		var connErr error
+		err := f.ssePacer.Call(func() (bool, error) {
+			connErr = f.connectAndProcessSSE(ctx, notifyFunc)
+			if connErr == nil {
+				return false, nil
+			}
+			if fserrors.ContextError(ctx, &connErr) {
+				return false, connErr
+			}
+			if isFatalError(connErr) {
+				return false, connErr
+			}
+			return true, connErr
+		})
+
+		if err != nil {
+			return err
+		}
+
+		fs.Debugf(f, "SSE connection ended, will retry")
+	}
+}
+
+func (f *Fs) connectAndProcessSSE(ctx context.Context, notifyFunc func(string, fs.EntryType)) error {
 	opts := rest.Opts{
-		Method: "GET",
-		Path:   "/api/events",
+		Method:      "GET",
+		Path:        "/api/events/stream",
+		ContentType: "text/event-stream",
+		ExtraHeaders: map[string]string{
+			"Accept":        "text/event-stream",
+			"Cache-Control": "no-cache",
+		},
 	}
 
-	err := f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, nil, &changes)
-		return shouldRetry(ctx, resp, err)
-	})
-
+	resp, err := f.srv.Call(ctx, &opts)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to connect to SSE endpoint: %w", err)
+	}
+	if resp == nil || resp.Body == nil {
+		return fmt.Errorf("no response from SSE endpoint")
+	}
+	defer resp.Body.Close()
+
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "text/event-stream") {
+		return fmt.Errorf("unexpected content type: %s", contentType)
 	}
 
-	var pathsToClear []string
-	for _, change := range changes {
-		if _, ok := processedEventIDs[change.ID]; ok {
+	fs.Debugf(f, "SSE connection established")
+	reader := bufio.NewReader(resp.Body)
+	var eventData strings.Builder
+
+	for {
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				return fmt.Errorf("SSE stream closed by server")
+			}
+			return fmt.Errorf("error reading SSE stream: %w", err)
+		}
+
+		line = strings.TrimRight(line, "\r\n")
+
+		if line == "" {
+			if eventData.Len() > 0 {
+				data := eventData.String()
+				eventData.Reset()
+
+				if err := f.processSSEEvent(data, notifyFunc); err != nil {
+					fs.Debugf(f, "Failed to process SSE event: %s", err)
+				}
+			}
 			continue
 		}
-		addPathToClear := func(parentID string) {
-			if path, ok := f.dirCache.GetInv(parentID); ok {
-				pathsToClear = append(pathsToClear, path)
+
+		if strings.HasPrefix(line, "data: ") {
+			eventData.WriteString(line[6:])
+		}
+	}
+}
+
+func (f *Fs) processSSEEvent(data string, notifyFunc func(string, fs.EntryType)) error {
+	var event api.Event
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return fmt.Errorf("failed to unmarshal event: %w", err)
+	}
+
+	// Get parent path from cache
+	parentPath, ok := f.dirCache.GetInv(event.Source.ParentId)
+	if !ok {
+		fs.Debugf(f, "SSE: skipping event for uncached parent %s", event.Source.ParentId)
+		return nil
+	}
+
+	fullPath := path.Join(parentPath, event.Source.Name)
+
+	// Filter: only notify for paths within root
+	if !strings.HasPrefix(fullPath, f.root) {
+		return nil
+	}
+
+	var entryType fs.EntryType
+	switch event.Source.Type {
+	case "folder":
+		entryType = fs.EntryDirectory
+	case "file":
+		entryType = fs.EntryObject
+	default:
+		entryType = fs.EntryObject
+	}
+
+	// Handle move events - notify both old and new locations
+	if event.Type == "file_move" && event.Source.DestParentId != "" {
+		if oldParentPath, ok := f.dirCache.GetInv(event.Source.DestParentId); ok {
+			oldPath := path.Join(oldParentPath, event.Source.Name)
+			if strings.HasPrefix(oldPath, f.root) {
+				fs.Debugf(f, "SSE move event: old path %s", oldPath)
+				notifyFunc(oldPath, entryType)
 			}
 		}
-
-		// Check original parent location
-		addPathToClear(change.Source.ParentId)
-
-		// Check destination parent location if file was moved
-		if change.Source.DestParentId != "" {
-			addPathToClear(change.Source.DestParentId)
-		}
-		processedEventIDs[change.ID] = time.Now()
 	}
-	notifiedPaths := make(map[string]bool)
-	for _, path := range pathsToClear {
-		if _, ok := notifiedPaths[path]; ok {
-			continue
-		}
-		notifiedPaths[path] = true
-		notifyFunc(path, fs.EntryDirectory)
-	}
+
+	fs.Debugf(f, "SSE event: %s (%v, type=%s)", fullPath, entryType, event.Type)
+	notifyFunc(fullPath, entryType)
+
 	return nil
+}
+
+// PutStream uploads to the remote path with the modTime given of indeterminate size
+func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	return f.Put(ctx, in, src, options...)
 }
 
 // OpenChunkWriter returns the chunk size and a ChunkWriter
@@ -834,13 +965,21 @@ func (f *Fs) OpenChunkWriter(
 	src fs.ObjectInfo,
 	options ...fs.OpenOption) (info fs.ChunkWriterInfo, writer fs.ChunkWriter, err error) {
 
-	if src.Size() <= 0 {
-		return info, nil, errCanNotUploadFileWithUnknownSize
-	}
-
 	o := &Object{
 		fs:     f,
 		remote: remote,
+	}
+
+	// If size is unknown, use bufferingChunkWriter that supports out-of-order chunks
+	if src.Size() <= 0 {
+		fs.Debugf(f, "OpenChunkWriter: unknown size, using buffering chunk writer")
+		return fs.ChunkWriterInfo{}, &bufferingChunkWriter{
+			f:      f,
+			o:      o,
+			src:    src,
+			remote: remote,
+			chunks: make(map[int]*chunkFile),
+		}, nil
 	}
 
 	uploadInfo, err := o.prepareUpload(ctx, src)
@@ -1096,8 +1235,6 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
 	var resp *http.Response
 
-	http := o.fs.srv
-
 	fs.FixRangeOption(options, o.size)
 
 	opts := rest.Opts{
@@ -1105,14 +1242,9 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
 		Options: options,
 	}
-	if !o.fs.opt.ThreadedStreams {
-		opts.Parameters = url.Values{
-			"download": []string{"1"},
-		}
-	}
 
 	err = o.fs.pacer.Call(func() (bool, error) {
-		resp, err = http.Call(ctx, &opts)
+		resp, err = o.fs.srv.Call(ctx, &opts)
 		return shouldRetry(ctx, resp, err)
 	})
 
@@ -1228,8 +1360,36 @@ func (o *Object) Size() int64 {
 	return o.size
 }
 
-// Hash returns the Md5sum of an object returning a lowercase hex string
 func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
+	if t != telDriveHash {
+		return "", hash.ErrUnsupported
+	}
+
+	if o.hash != "" {
+		return o.hash, nil
+	}
+
+	// Fetch from server if not cached
+	var file api.FileInfo
+	opts := rest.Opts{
+		Method: "GET",
+		Path:   "/api/files/" + o.id,
+	}
+
+	err := o.fs.pacer.Call(func() (bool, error) {
+		resp, err := o.fs.srv.CallJSON(ctx, &opts, nil, &file)
+		return shouldRetry(ctx, resp, err)
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to get file hash: %w", err)
+	}
+
+	if file.Hash != "" {
+		o.hash = file.Hash
+		return o.hash, nil
+	}
+
 	return "", hash.ErrUnsupported
 }
 

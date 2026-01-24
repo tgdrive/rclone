@@ -1879,8 +1879,50 @@ func copyURLFn(ctx context.Context, dstFileName string, url string, autoFilename
 	return fn(ctx, dstFileName, resp.Body, resp.ContentLength, modTime)
 }
 
+func CopyURLMulti(ctx context.Context, fdst fs.Fs, dstFileName string, srcObj fs.Object, overwrite bool) (dst fs.Object, err error) {
+	ci := fs.GetConfig(ctx)
+
+	destObj, err := fdst.NewObject(ctx, dstFileName)
+
+	if err != nil && !errors.Is(err, fs.ErrorObjectNotFound) {
+		return nil, err
+	}
+
+	needsCopy := overwrite || errors.Is(err, fs.ErrorObjectNotFound) || (destObj != nil && NeedTransfer(ctx, destObj, srcObj))
+
+	if needsCopy {
+		tr := accounting.Stats(ctx).NewTransferRemoteSize(dstFileName, srcObj.Size(), nil, fdst)
+		defer func() {
+			tr.Done(ctx, err)
+		}()
+		return multiThreadCopy(ctx, fdst, dstFileName, srcObj, ci.MultiThreadStreams, tr)
+	}
+	return destObj, nil
+}
+
 // CopyURL copies the data from the url to (fdst, dstFileName)
 func CopyURL(ctx context.Context, fdst fs.Fs, dstFileName string, url string, autoFilename, dstFileNameFromHeader bool, noClobber bool) (dst fs.Object, err error) {
+	ci := fs.GetConfig(ctx)
+	if ci.MultiThreadStreams > 0 {
+		filename := dstFileName
+		srcObj, err := object.NewHTTPObject(ctx, url, dstFileNameFromHeader)
+		if err != nil {
+			return nil, err
+		}
+		if autoFilename {
+			filename = srcObj.Remote()
+			if filename == "." || filename == "/" {
+				return nil, fmt.Errorf("CopyURL failed: file name wasn't found in url")
+			}
+		}
+		if noClobber {
+			_, err = fdst.NewObject(ctx, filename)
+			if err == nil {
+				return nil, errors.New("CopyURL failed: file already exist")
+			}
+		}
+		return CopyURLMulti(ctx, fdst, filename, srcObj, false)
+	}
 	err = copyURLFn(ctx, dstFileName, url, autoFilename, dstFileNameFromHeader, func(ctx context.Context, dstFileName string, in io.ReadCloser, size int64, modTime time.Time) (err error) {
 		if noClobber {
 			_, err = fdst.NewObject(ctx, dstFileName)
