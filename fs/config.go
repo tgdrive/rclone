@@ -562,12 +562,11 @@ var ConfigOptionsInfo = Options{{
 	Help:    "Transform paths during the copy process.",
 	Groups:  "Copy",
 }, {
-	Name:    "http_proxy",
+	Name:    "proxy",
 	Default: "",
-	Help:    "HTTP proxy URL.",
+	Help:    "Proxy URL, e.g. http://127.0.0.1:8080 or socks5://127.0.0.1:1080",
 	Groups:  "Networking",
 }}
-
 // ConfigInfo is filesystem config options
 type ConfigInfo struct {
 	LogLevel                   LogLevel          `config:"log_level"`
@@ -679,7 +678,7 @@ type ConfigInfo struct {
 	MetadataMapper             SpaceSepList      `config:"metadata_mapper"`
 	MaxConnections             int               `config:"max_connections"`
 	NameTransform              []string          `config:"name_transform"`
-	HTTPProxy                  string            `config:"http_proxy"`
+	Proxy                      string            `config:"proxy"`
 }
 
 func init() {

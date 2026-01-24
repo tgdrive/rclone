@@ -15,8 +15,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/proxy"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
@@ -210,13 +213,22 @@ func NewTransportCustom(ctx context.Context, customize func(*http.Transport)) *T
 	// Start with a sensible set of defaults then override.
 	// This also means we get new stuff when it gets added to go
 	t := new(http.Transport)
+	var socks5Dialer proxy.ContextDialer
 	structs.SetDefaults(t, http.DefaultTransport.(*http.Transport))
-	if ci.HTTPProxy != "" {
-		proxyURL, err := url.Parse(ci.HTTPProxy)
+	if ci.Proxy != "" {
+		proxyURL, err := url.Parse(ci.Proxy)
 		if err != nil {
 			t.Proxy = func(*http.Request) (*url.URL, error) {
-				return nil, fmt.Errorf("failed to set --http-proxy from %q: %w", ci.HTTPProxy, err)
+				return nil, fmt.Errorf("failed to set --proxy from %q: %w", ci.Proxy, err)
 			}
+		} else if strings.HasPrefix(proxyURL.Scheme, "socks5") {
+			// For SOCKS5, we use a custom dialer instead of t.Proxy
+			d, err := proxy.FromURL(proxyURL, NewDialer(ctx))
+			if err != nil {
+				fs.Fatalf(nil, "failed to create socks5 dialer: %v", err)
+			}
+			socks5Dialer = d.(proxy.ContextDialer)
+			t.Proxy = nil // Explicitly disable HTTP proxy
 		} else {
 			t.Proxy = http.ProxyURL(proxyURL)
 		}
@@ -266,6 +278,9 @@ func NewTransportCustom(ctx context.Context, customize func(*http.Transport)) *T
 
 	t.DisableCompression = ci.NoGzip
 	t.DialContext = func(reqCtx context.Context, network, addr string) (net.Conn, error) {
+		if socks5Dialer != nil {
+			return socks5Dialer.DialContext(reqCtx, network, addr)
+		}
 		return NewDialer(ctx).DialContext(reqCtx, network, addr)
 	}
 	t.IdleConnTimeout = 60 * time.Second
