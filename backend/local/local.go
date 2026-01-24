@@ -1555,7 +1555,14 @@ func (f *Fs) OpenWriterAt(ctx context.Context, remote string, size int64) (fs.Wr
 		return nil, errors.New("can't open a symlink for random writing")
 	}
 
-	out, err := file.OpenFile(o.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	ci := fs.GetConfig(ctx)
+	
+	flags := os.O_WRONLY | os.O_CREATE
+	if !ci.MultiThreadResume {
+		flags |= os.O_TRUNC
+	}
+
+	out, err := file.OpenFile(o.path, flags, 0666)
 	if err != nil {
 		return nil, err
 	}

@@ -465,6 +465,11 @@ var ConfigOptionsInfo = Options{{
 	Help:    "Chunk size for multi-thread downloads / uploads, if not set by filesystem",
 	Groups:  "Copy",
 }, {
+	Name:    "multi_thread_resume",
+	Default: false,
+	Help:    "Enable resume support for multi-thread downloads on local filesystem (uses state files to track progress)",
+	Groups:  "Copy",
+}, {
 	Name:    "use_json_log",
 	Default: false,
 	Help:    "Use json log format",
@@ -562,9 +567,9 @@ var ConfigOptionsInfo = Options{{
 	Help:    "Transform paths during the copy process.",
 	Groups:  "Copy",
 }, {
-	Name:    "http_proxy",
+	Name:    "proxy",
 	Default: "",
-	Help:    "HTTP proxy URL.",
+	Help:    "Proxy URL, e.g. http://127.0.0.1:8080 or socks5://127.0.0.1:1080",
 	Groups:  "Networking",
 }}
 
@@ -656,6 +661,7 @@ type ConfigInfo struct {
 	MultiThreadSet             bool              `config:"multi_thread_set"`        // whether MultiThreadStreams was set (set in fs/config/configflags)
 	MultiThreadChunkSize       SizeSuffix        `config:"multi_thread_chunk_size"` // Chunk size for multi-thread downloads / uploads, if not set by filesystem
 	MultiThreadWriteBufferSize SizeSuffix        `config:"multi_thread_write_buffer_size"`
+	MultiThreadResume          bool              `config:"multi_thread_resume"`
 	OrderBy                    string            `config:"order_by"` // instructions on how to order the transfer
 	UploadHeaders              []*HTTPOption     `config:"upload_headers"`
 	DownloadHeaders            []*HTTPOption     `config:"download_headers"`
@@ -679,7 +685,7 @@ type ConfigInfo struct {
 	MetadataMapper             SpaceSepList      `config:"metadata_mapper"`
 	MaxConnections             int               `config:"max_connections"`
 	NameTransform              []string          `config:"name_transform"`
-	HTTPProxy                  string            `config:"http_proxy"`
+	Proxy                      string            `config:"proxy"`
 }
 
 func init() {

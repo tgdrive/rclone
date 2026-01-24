@@ -211,11 +211,11 @@ func NewTransportCustom(ctx context.Context, customize func(*http.Transport)) *T
 	// This also means we get new stuff when it gets added to go
 	t := new(http.Transport)
 	structs.SetDefaults(t, http.DefaultTransport.(*http.Transport))
-	if ci.HTTPProxy != "" {
-		proxyURL, err := url.Parse(ci.HTTPProxy)
+	if ci.Proxy != "" {
+		proxyURL, err := url.Parse(ci.Proxy)
 		if err != nil {
 			t.Proxy = func(*http.Request) (*url.URL, error) {
-				return nil, fmt.Errorf("failed to set --http-proxy from %q: %w", ci.HTTPProxy, err)
+				return nil, fmt.Errorf("failed to set --proxy from %q: %w", ci.Proxy, err)
 			}
 		} else {
 			t.Proxy = http.ProxyURL(proxyURL)
