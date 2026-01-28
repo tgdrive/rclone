@@ -13,7 +13,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -1880,33 +1879,8 @@ func copyURLFn(ctx context.Context, dstFileName string, url string, autoFilename
 	return fn(ctx, dstFileName, resp.Body, resp.ContentLength, modTime)
 }
 
-func CopyURLMulti(ctx context.Context, fdst fs.Fs, dstFileName string, link string, overwrite bool) (dst fs.Object, err error) {
+func CopyURLMulti(ctx context.Context, fdst fs.Fs, dstFileName string, srcObj fs.Object, overwrite bool) (dst fs.Object, err error) {
 	ci := fs.GetConfig(ctx)
-	u, err := url.Parse(link)
-	if err != nil {
-		return nil, err
-	}
-
-	filename := filepath.Base(u.Path)
-	if len(u.RawQuery) > 0 {
-		filename += "?" + u.RawQuery
-	}
-
-	baseU := *u
-	baseU.Path = filepath.Dir(u.Path)
-	baseU.RawQuery = ""
-	baseURL := baseU.String()
-
-	srcFs, err := fs.NewFs(ctx, fmt.Sprintf(":http,url='%s',no_escape=true:", baseURL))
-
-	if err != nil {
-		return nil, err
-	}
-
-	srcObj, err := srcFs.NewObject(ctx, filename)
-	if err != nil {
-		return nil, err
-	}
 
 	destObj, err := fdst.NewObject(ctx, dstFileName)
 
@@ -1928,10 +1902,6 @@ func CopyURLMulti(ctx context.Context, fdst fs.Fs, dstFileName string, link stri
 
 // CopyURL copies the data from the url to (fdst, dstFileName)
 func CopyURL(ctx context.Context, fdst fs.Fs, dstFileName string, url string, autoFilename, dstFileNameFromHeader bool, noClobber bool) (dst fs.Object, err error) {
-	ci := fs.GetConfig(ctx)
-	if ci.MultiThreadResume {
-		return CopyURLMulti(ctx, fdst, dstFileName, url, false)
-	}
 	err = copyURLFn(ctx, dstFileName, url, autoFilename, dstFileNameFromHeader, func(ctx context.Context, dstFileName string, in io.ReadCloser, size int64, modTime time.Time) (err error) {
 		if noClobber {
 			_, err = fdst.NewObject(ctx, dstFileName)

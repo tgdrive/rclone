@@ -115,7 +115,6 @@ type Options struct {
 	ChannelID         int64                `config:"channel_id"`
 	EncryptFiles      bool                 `config:"encrypt_files"`
 	PageSize          int64                `config:"page_size"`
-	ThreadedStreams   bool                 `config:"threaded_streams"`
 	Enc               encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -1096,8 +1095,6 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
 	var resp *http.Response
 
-	http := o.fs.srv
-
 	fs.FixRangeOption(options, o.size)
 
 	opts := rest.Opts{
@@ -1105,14 +1102,9 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
 		Options: options,
 	}
-	if !o.fs.opt.ThreadedStreams {
-		opts.Parameters = url.Values{
-			"download": []string{"1"},
-		}
-	}
 
 	err = o.fs.pacer.Call(func() (bool, error) {
-		resp, err = http.Call(ctx, &opts)
+		resp, err = o.fs.srv.Call(ctx, &opts)
 		return shouldRetry(ctx, resp, err)
 	})
 

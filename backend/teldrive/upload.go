@@ -178,7 +178,7 @@ func (*objectChunkWriter) Abort(ctx context.Context) error {
 
 func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadInfo, error) {
 
-	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, src.Remote(), true)
+	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, o.remote, true)
 
 	if err != nil {
 		return nil, err
