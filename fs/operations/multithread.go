@@ -3,13 +3,18 @@ package operations
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
+	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/atexit"
 	"github.com/rclone/rclone/lib/multipart"
 	"github.com/rclone/rclone/lib/pool"
@@ -18,7 +23,285 @@ import (
 
 const (
 	multithreadChunkSize = 64 << 10
+	resumeStateSuffix    = ".rclone"
+	resumeFileVersion    = 1
 )
+
+// resumeState holds the resume state using a bitmap
+type resumeState struct {
+	Source      string
+	Destination string
+	Size        int64
+	ChunkSize   int64
+	NumChunks   int
+	ETag        string    // ETag from source (if available)
+	ModTime     time.Time // Modification time from source
+	// Bitmap: 1 bit per chunk, 1=complete, 0=missing
+	Bitmap []byte
+}
+
+// loadResumeState loads resume state from binary file
+func loadResumeState(filePath string) (*resumeState, error) {
+	statePath := filePath + resumeStateSuffix
+
+	f, err := os.Open(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	state := &resumeState{}
+
+	// Read version (1 byte)
+	var version uint8
+	if err := binary.Read(f, binary.BigEndian, &version); err != nil {
+		return nil, fmt.Errorf("failed to read version: %w", err)
+	}
+	if version != resumeFileVersion {
+		return nil, fmt.Errorf("unsupported resume file version: %d", version)
+	}
+
+	// Read source length and source string
+	var sourceLen uint32
+	if err := binary.Read(f, binary.BigEndian, &sourceLen); err != nil {
+		return nil, fmt.Errorf("failed to read source length: %w", err)
+	}
+	sourceBytes := make([]byte, sourceLen)
+	if _, err := io.ReadFull(f, sourceBytes); err != nil {
+		return nil, fmt.Errorf("failed to read source: %w", err)
+	}
+	state.Source = string(sourceBytes)
+
+	// Read destination length and destination string
+	var destLen uint32
+	if err := binary.Read(f, binary.BigEndian, &destLen); err != nil {
+		return nil, fmt.Errorf("failed to read destination length: %w", err)
+	}
+	destBytes := make([]byte, destLen)
+	if _, err := io.ReadFull(f, destBytes); err != nil {
+		return nil, fmt.Errorf("failed to read destination: %w", err)
+	}
+	state.Destination = string(destBytes)
+
+	// Read size
+	if err := binary.Read(f, binary.BigEndian, &state.Size); err != nil {
+		return nil, fmt.Errorf("failed to read size: %w", err)
+	}
+
+	// Read chunk size
+	if err := binary.Read(f, binary.BigEndian, &state.ChunkSize); err != nil {
+		return nil, fmt.Errorf("failed to read chunk size: %w", err)
+	}
+
+	// Read num chunks (read as int32 then convert to int)
+	var numChunks int32
+	if err := binary.Read(f, binary.BigEndian, &numChunks); err != nil {
+		return nil, fmt.Errorf("failed to read num chunks: %w", err)
+	}
+	state.NumChunks = int(numChunks)
+
+	// Read ETag length and ETag string
+	var etagLen uint32
+	if err := binary.Read(f, binary.BigEndian, &etagLen); err != nil {
+		return nil, fmt.Errorf("failed to read etag length: %w", err)
+	}
+	if etagLen > 0 {
+		etagBytes := make([]byte, etagLen)
+		if _, err := io.ReadFull(f, etagBytes); err != nil {
+			return nil, fmt.Errorf("failed to read etag: %w", err)
+		}
+		state.ETag = string(etagBytes)
+	}
+
+	// Read ModTime (Unix timestamp in seconds)
+	var modTimeSec int64
+	if err := binary.Read(f, binary.BigEndian, &modTimeSec); err != nil {
+		return nil, fmt.Errorf("failed to read modtime: %w", err)
+	}
+	state.ModTime = time.Unix(modTimeSec, 0)
+
+	// Read bitmap
+	bitmapLen := (state.NumChunks + 7) / 8
+	state.Bitmap = make([]byte, bitmapLen)
+	if _, err := io.ReadFull(f, state.Bitmap); err != nil {
+		return nil, fmt.Errorf("failed to read bitmap: %w", err)
+	}
+
+	return state, nil
+}
+
+// save saves the resume state to binary file
+func (rs *resumeState) save(filePath string) error {
+	statePath := filePath + resumeStateSuffix
+	tempPath := statePath + ".tmp"
+
+	f, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+
+	// Write version
+	if err := binary.Write(f, binary.BigEndian, uint8(resumeFileVersion)); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write version: %w", err)
+	}
+
+	// Write source
+	if err := binary.Write(f, binary.BigEndian, uint32(len(rs.Source))); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write source length: %w", err)
+	}
+	if _, err := f.WriteString(rs.Source); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write source: %w", err)
+	}
+
+	// Write destination
+	if err := binary.Write(f, binary.BigEndian, uint32(len(rs.Destination))); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write destination length: %w", err)
+	}
+	if _, err := f.WriteString(rs.Destination); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write destination: %w", err)
+	}
+
+	// Write size
+	if err := binary.Write(f, binary.BigEndian, rs.Size); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write size: %w", err)
+	}
+
+	// Write chunk size
+	if err := binary.Write(f, binary.BigEndian, rs.ChunkSize); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write chunk size: %w", err)
+	}
+
+	// Write num chunks (cast to int32 for fixed size)
+	if err := binary.Write(f, binary.BigEndian, int32(rs.NumChunks)); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write num chunks: %w", err)
+	}
+
+	// Write ETag
+	if err := binary.Write(f, binary.BigEndian, uint32(len(rs.ETag))); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write etag length: %w", err)
+	}
+	if _, err := f.WriteString(rs.ETag); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write etag: %w", err)
+	}
+
+	// Write ModTime (Unix timestamp)
+	if err := binary.Write(f, binary.BigEndian, rs.ModTime.Unix()); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write modtime: %w", err)
+	}
+
+	// Write bitmap
+	if _, err := f.Write(rs.Bitmap); err != nil {
+		f.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write bitmap: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to close file: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, statePath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to rename file: %w", err)
+	}
+
+	return nil
+}
+
+// deleteResumeState deletes the resume state file
+func deleteResumeState(filePath string) error {
+	statePath := filePath + resumeStateSuffix
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to delete resume state: %w", err)
+	}
+	return nil
+}
+
+// isChunkComplete checks if a chunk is marked as complete
+func (rs *resumeState) isChunkComplete(chunkIdx int) bool {
+	if chunkIdx < 0 || chunkIdx >= rs.NumChunks {
+		return false
+	}
+	byteIdx := chunkIdx / 8
+	bitIdx := uint(chunkIdx % 8)
+	return (rs.Bitmap[byteIdx] & (1 << (7 - bitIdx))) != 0
+}
+
+// markChunkComplete marks a chunk as complete
+func (rs *resumeState) markChunkComplete(chunkIdx int) {
+	if chunkIdx < 0 || chunkIdx >= rs.NumChunks {
+		return
+	}
+	byteIdx := chunkIdx / 8
+	bitIdx := uint(chunkIdx % 8)
+	rs.Bitmap[byteIdx] |= 1 << (7 - bitIdx)
+}
+
+// countComplete returns the number of complete chunks
+func (rs *resumeState) countComplete() int {
+	count := 0
+	for i := 0; i < rs.NumChunks; i++ {
+		if rs.isChunkComplete(i) {
+			count++
+		}
+	}
+	return count
+}
+
+// validate checks if the resume state is valid for the given parameters
+func (rs *resumeState) validate(source string, size int64, chunkSize int64) error {
+	if rs.Source != source {
+		return fmt.Errorf("source mismatch: expected %s, got %s", rs.Source, source)
+	}
+	if rs.Size != size {
+		return fmt.Errorf("size mismatch: expected %d, got %d", rs.Size, size)
+	}
+	if rs.ChunkSize != chunkSize {
+		return fmt.Errorf("chunk size mismatch: expected %d, got %d", rs.ChunkSize, chunkSize)
+	}
+	return nil
+}
+
+// newResumeState creates a new resume state with empty bitmap
+func newResumeState(source, destination string, size, chunkSize int64) *resumeState {
+	numChunks := calculateNumChunks(size, chunkSize)
+	bitmapLen := (numChunks + 7) / 8
+	return &resumeState{
+		Source:      source,
+		Destination: destination,
+		Size:        size,
+		ChunkSize:   chunkSize,
+		NumChunks:   numChunks,
+		Bitmap:      make([]byte, bitmapLen),
+	}
+}
 
 // Return a boolean as to whether we should use multi thread copy for
 // this transfer
@@ -93,6 +376,7 @@ func (mc *multiThreadCopyState) copyChunk(ctx context.Context, chunk int, writer
 	defer fs.CheckClose(rc, &err)
 
 	var rs io.ReadSeeker
+
 	if mc.noBuffering {
 		// Read directly if we are sure we aren't going to seek
 		// and account with accounting
@@ -134,6 +418,13 @@ func calculateNumChunks(size int64, chunkSize int64) int {
 func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object, concurrency int, tr *accounting.Transfer, options ...fs.OpenOption) (newDst fs.Object, err error) {
 	openChunkWriter := f.Features().OpenChunkWriter
 	ci := fs.GetConfig(ctx)
+
+	// Check if resume is enabled and destination supports it
+	resumeEnabled := ci.MultiThreadResume && f.Features().IsLocal
+
+	var state *resumeState
+	var localPath string
+
 	noBuffering := false
 	usingOpenWriterAt := false
 	if openChunkWriter == nil {
@@ -174,7 +465,7 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 	uploadedOK := false
 	defer atexit.OnError(&err, func() {
 		cancel()
-		if info.LeavePartsOnError || uploadedOK {
+		if info.LeavePartsOnError || uploadedOK || resumeEnabled {
 			return
 		}
 		fs.Debugf(src, "multi-thread copy: cancelling transfer on exit")
@@ -205,6 +496,52 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		concurrency = 1
 	}
 
+	// Initialize or validate resume state
+	if resumeEnabled {
+		localPath = filepath.Join(f.Root(), remote)
+
+		// Try to load existing resume state
+		state, err = loadResumeState(localPath)
+		if err != nil {
+			fs.Debugf(remote, "Failed to load resume state, starting fresh: %v", err)
+			state = nil
+		} else if state != nil {
+			// Validate state against current file
+			if err := state.validate(src.Remote(), src.Size(), info.ChunkSize); err != nil {
+				fs.Debugf(remote, "Resume state invalid (%v), starting fresh", err)
+				state = nil
+			} else {
+				// Validate ETag if available
+				currentETag, err := src.Hash(ctx, hash.MD5)
+				if err == nil && currentETag != "" && state.ETag != "" && currentETag != state.ETag {
+					fs.Logf(remote, "ETag mismatch (source changed), starting fresh download")
+					state = nil
+				} else if !state.ModTime.IsZero() {
+					currentModTime := src.ModTime(ctx)
+					if !currentModTime.Equal(state.ModTime) {
+						fs.Logf(remote, "Modification time mismatch (source changed), starting fresh download")
+						state = nil
+					}
+				}
+			}
+		}
+
+		if state == nil {
+			state = newResumeState(src.Remote(), localPath, src.Size(), info.ChunkSize)
+			// Store ETag and ModTime
+			etag, err := src.Hash(ctx, hash.MD5)
+			if err == nil {
+				state.ETag = etag
+			}
+			state.ModTime = src.ModTime(ctx)
+		}
+
+		completed := state.countComplete()
+		if completed > 0 {
+			fs.Logf(remote, "Resuming download: %d/%d chunks already complete", completed, state.NumChunks)
+		}
+	}
+
 	g, gCtx := errgroup.WithContext(uploadCtx)
 	g.SetLimit(concurrency)
 
@@ -220,15 +557,55 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 	// Make accounting
 	mc.acc = tr.Account(gCtx, nil)
 
+	// Account for already-downloaded bytes to show correct progress position
+	if resumeEnabled && state != nil {
+		var completedBytes int64
+		for chunkIdx := range numChunks {
+			if state.isChunkComplete(chunkIdx) {
+				chunkStart := int64(chunkIdx) * info.ChunkSize
+				chunkEnd := min(chunkStart+info.ChunkSize, src.Size())
+				completedBytes += chunkEnd - chunkStart
+			}
+		}
+		if completedBytes > 0 {
+			mc.acc.AccountReadN(completedBytes)
+		}
+	}
+
 	fs.Debugf(src, "Starting multi-thread copy with %d chunks of size %v with %v parallel streams", mc.numChunks, fs.SizeSuffix(mc.partSize), concurrency)
+
+	// Track chunks for state saving
+	var stateMu sync.Mutex
+
 	for chunk := range mc.numChunks {
+		// Skip completed chunks if resuming
+		if resumeEnabled && state != nil && state.isChunkComplete(chunk) {
+			continue
+		}
+
 		// Fail fast, in case an errgroup managed function returns an error
 		if gCtx.Err() != nil {
 			break
 		}
 		chunk := chunk
 		g.Go(func() error {
-			return mc.copyChunk(gCtx, chunk, chunkWriter)
+			err := mc.copyChunk(gCtx, chunk, chunkWriter)
+			if err != nil {
+				return err
+			}
+
+			// Mark as complete and save state (only after successful write)
+			if resumeEnabled && state != nil {
+				stateMu.Lock()
+				state.markChunkComplete(chunk)
+				if localPath != "" {
+					if saveErr := state.save(localPath); saveErr != nil {
+						fs.Debugf(remote, "Failed to save resume state: %v", saveErr)
+					}
+				}
+				stateMu.Unlock()
+			}
+			return nil
 		})
 	}
 
@@ -241,6 +618,13 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		return nil, fmt.Errorf("multi-thread copy: failed to close object after copy: %w", err)
 	}
 	uploadedOK = true // file is definitely uploaded OK so no need to abort
+
+	// Delete state file on successful completion
+	if resumeEnabled && localPath != "" {
+		if err := deleteResumeState(localPath); err != nil {
+			fs.Debugf(remote, "Failed to delete resume state: %v", err)
+		}
+	}
 
 	obj, err := f.NewObject(ctx, remote)
 	if err != nil {
