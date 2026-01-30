@@ -1902,6 +1902,27 @@ func CopyURLMulti(ctx context.Context, fdst fs.Fs, dstFileName string, srcObj fs
 
 // CopyURL copies the data from the url to (fdst, dstFileName)
 func CopyURL(ctx context.Context, fdst fs.Fs, dstFileName string, url string, autoFilename, dstFileNameFromHeader bool, noClobber bool) (dst fs.Object, err error) {
+	ci := fs.GetConfig(ctx)
+	if ci.MultiThreadStreams > 0 {
+		filename := dstFileName
+		srcObj, err := object.NewHTTPObject(ctx, url, dstFileNameFromHeader)
+		if err != nil {
+			return nil, err
+		}
+		if autoFilename {
+			filename = srcObj.Remote()
+			if filename == "." || filename == "/" {
+				return nil, fmt.Errorf("CopyURL failed: file name wasn't found in url")
+			}
+		}
+		if noClobber {
+			_, err = fdst.NewObject(ctx, filename)
+			if err == nil {
+				return nil, errors.New("CopyURL failed: file already exist")
+			}
+		}
+		return CopyURLMulti(ctx, fdst, filename, srcObj, false)
+	}
 	err = copyURLFn(ctx, dstFileName, url, autoFilename, dstFileNameFromHeader, func(ctx context.Context, dstFileName string, in io.ReadCloser, size int64, modTime time.Time) (err error) {
 		if noClobber {
 			_, err = fdst.NewObject(ctx, dstFileName)

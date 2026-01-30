@@ -2,7 +2,6 @@
 package teldrive
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -228,8 +227,14 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	}
 
 	if opt.ChannelID < 0 {
-		channnelId := strconv.FormatInt(opt.ChannelID, 10)
-		opt.ChannelID, _ = strconv.ParseInt(strings.TrimPrefix(channnelId, "-100"), 10, 64)
+		channelIDStr := strconv.FormatInt(opt.ChannelID, 10)
+		// teldrive API expects channel ID without the -100 prefix for supergroups/channels
+		trimmedIDStr := strings.TrimPrefix(channelIDStr, "-100")
+		newID, err := strconv.ParseInt(trimmedIDStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid channel_id: %w", err)
+		}
+		opt.ChannelID = newID
 	}
 
 	f := &Fs{
@@ -604,7 +609,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 	o := &Object{
 		fs: f,
 	}
-	uploadInfo, err := o.uploadMultipart(ctx, bufio.NewReader(in), src)
+	uploadInfo, err := o.uploadMultipart(ctx, in, src)
 
 	if err != nil {
 		return err
@@ -688,7 +693,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	var uploadInfo *uploadInfo
 
 	if src.Size() > 0 {
-		uploadInfo, err = o.uploadMultipart(ctx, bufio.NewReader(in), src)
+		uploadInfo, err = o.uploadMultipart(ctx, in, src)
 		if err != nil {
 			return err
 		}
