@@ -33,6 +33,7 @@ type FileInfo struct {
 	ParentId string    `json:"parentId"`
 	Type     string    `json:"type"`
 	ModTime  time.Time `json:"updatedAt"`
+	Hash     string    `json:"hash"`
 }
 
 type Meta struct {
@@ -46,7 +47,6 @@ type ReadMetadataResponse struct {
 	Meta  Meta       `json:"meta"`
 }
 
-// MetadataRequestOptions represents all the options when listing folder contents
 type MetadataRequestOptions struct {
 	Page  int64
 	Limit int64
@@ -82,7 +82,8 @@ type CreateFileRequest struct {
 	Encrypted bool       `json:"encrypted,omitempty"`
 	Parts     []FilePart `json:"parts,omitempty"`
 	ParentId  string     `json:"parentId,omitempty"`
-	ModTime   time.Time  `json:"updatedAt,omitempty"`
+	ModTime   time.Time  `json:"updatedAt"`
+	UploadId  string     `json:"uploadId"`
 }
 
 type MoveFileRequest struct {
@@ -113,7 +114,7 @@ type RemoveFileRequest struct {
 type CopyFile struct {
 	Newname     string    `json:"newName"`
 	Destination string    `json:"destination"`
-	ModTime     time.Time `json:"updatedAt,omitempty"`
+	ModTime     time.Time `json:"updatedAt"`
 }
 
 type Session struct {

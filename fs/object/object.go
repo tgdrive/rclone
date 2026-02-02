@@ -434,46 +434,23 @@ var HTTPFs httpFs
 
 type httpFs struct{}
 
-func (h httpFs) Features() *fs.Features {
-	return &fs.Features{}
-}
-
-func (h httpFs) Hashes() hash.Set {
-	return hash.Set(hash.None)
-}
-
+func (h httpFs) Features() *fs.Features { return &fs.Features{} }
+func (h httpFs) Hashes() hash.Set       { return hash.Set(hash.None) }
 func (h httpFs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
 	return nil, nil
 }
-
-func (h httpFs) Mkdir(ctx context.Context, dir string) error {
-	return nil
-}
-func (h httpFs) Name() string {
-	return "http"
-}
+func (h httpFs) Mkdir(ctx context.Context, dir string) error { return nil }
+func (h httpFs) Name() string                                { return "http" }
 func (h httpFs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	return nil, fs.ErrorObjectNotFound
 }
-
-func (h httpFs) Precision() time.Duration {
-	return time.Nanosecond
-}
+func (h httpFs) Precision() time.Duration { return time.Nanosecond }
 func (h httpFs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
 	return nil, nil
 }
-
-func (h httpFs) Rmdir(ctx context.Context, dir string) error {
-	return nil
-}
-
-func (h httpFs) Root() string {
-	return ""
-}
-
-func (h httpFs) String() string {
-	return "http"
-}
+func (h httpFs) Rmdir(ctx context.Context, dir string) error { return nil }
+func (h httpFs) Root() string                                { return "" }
+func (h httpFs) String() string                              { return "http" }
 
 var _ fs.Fs = HTTPFs
 
@@ -506,26 +483,11 @@ func (o *HTTPObject) String() string {
 	return o.remote
 }
 
-func (o *HTTPObject) Remote() string {
-	return o.remote
-}
-
-func (o *HTTPObject) ModTime(ctx context.Context) time.Time {
-	return o.modTime
-}
-
-func (o *HTTPObject) Size() int64 {
-	return o.size
-}
-
-func (o *HTTPObject) Fs() fs.Info {
-	return HTTPFs
-}
-
-func (o *HTTPObject) Storable() bool {
-	return true
-}
-
+func (o *HTTPObject) Remote() string                        { return o.remote }
+func (o *HTTPObject) ModTime(ctx context.Context) time.Time { return o.modTime }
+func (o *HTTPObject) Size() int64                           { return o.size }
+func (o *HTTPObject) Fs() fs.Info                           { return HTTPFs }
+func (o *HTTPObject) Storable() bool                        { return true }
 func (o *HTTPObject) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
 	var (
 		err error
@@ -548,19 +510,11 @@ func (o *HTTPObject) Open(ctx context.Context, options ...fs.OpenOption) (io.Rea
 	}
 	return res.Body, nil
 }
-
 func (o *HTTPObject) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
 	return nil
 }
-
-func (o *HTTPObject) Remove(ctx context.Context) error {
-	return nil
-}
-
-func (o *HTTPObject) SetModTime(ctx context.Context, modTime time.Time) error {
-	return nil
-}
-
+func (o *HTTPObject) Remove(ctx context.Context) error                        { return nil }
+func (o *HTTPObject) SetModTime(ctx context.Context, modTime time.Time) error { return nil }
 func (o *HTTPObject) Hash(ctx context.Context, r hash.Type) (string, error) {
 	return "", hash.ErrUnsupported
 }
