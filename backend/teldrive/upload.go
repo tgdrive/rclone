@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -407,6 +406,9 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadI
 	if err != nil {
 		return nil, err
 	}
+	if src.Size() == 0 {
+		return &uploadInfo{fileName: leaf, dir: directoryID}, nil
+	}
 
 	uploadID := getMD5Hash(fmt.Sprintf("%s:%s:%d:%d", directoryID, leaf, src.Size(), o.fs.userId))
 
@@ -468,10 +470,6 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadI
 func (o *Object) uploadMultipart(ctx context.Context, in io.Reader, src fs.ObjectInfo) (*uploadInfo, error) {
 
 	size := src.Size()
-
-	if size < 0 {
-		return nil, errors.New("unknown-sized upload not supported")
-	}
 
 	uploadInfo, err := o.prepareUpload(ctx, src)
 

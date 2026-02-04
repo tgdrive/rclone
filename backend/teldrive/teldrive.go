@@ -646,7 +646,7 @@ func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 		}
 		// Create new src with known size for createFile
 		src = object.NewStaticObjectInfo(src.Remote(), src.ModTime(ctx), size, false, nil, f)
-	} else if size > 0 {
+	} else {
 		uploadInfo, err = o.uploadMultipart(ctx, in, src)
 		if err != nil {
 			return err
@@ -729,7 +729,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		if err != nil {
 			return err
 		}
-	} else if size > 0 {
+	} else {
 		uploadInfo, err = o.uploadMultipart(ctx, in, src)
 		if err != nil {
 			return err
