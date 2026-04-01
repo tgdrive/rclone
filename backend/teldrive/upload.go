@@ -6,17 +6,15 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"net/url"
-	"os"
-	"strconv"
-
-	"github.com/google/uuid"
 	"github.com/rclone/rclone/backend/teldrive/api"
 	"github.com/rclone/rclone/fs/object"
 	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/lib/pool"
 	"github.com/rclone/rclone/lib/rest"
+	"io"
+	"net/url"
+	"os"
+	"strconv"
 
 	"github.com/rclone/rclone/fs"
 )
@@ -69,8 +67,6 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		return existing.Size, nil
 	}
 
-	var partName string
-
 	err = w.f.pacer.Call(func() (bool, error) {
 
 		size, err = reader.Seek(0, io.SeekEnd)
@@ -85,14 +81,6 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		}
 
 		fs.Debugf(w.o, "Sending chunk %d length %d", chunkNumber, size)
-		if w.f.opt.RandomChunkName {
-			partName = getMD5Hash(uuid.New().String())
-		} else {
-			partName = w.uploadInfo.fileName
-			if w.uploadInfo.totalChunks > 1 {
-				partName = fmt.Sprintf("%s.part.%03d", w.uploadInfo.fileName, chunkNumber)
-			}
-		}
 
 		opts := rest.Opts{
 			Method:        "POST",
@@ -101,7 +89,6 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 			NoResponse:    true,
 			ContentType:   "application/octet-stream",
 			Parameters: url.Values{
-				"partName":  []string{partName},
 				"fileName":  []string{w.uploadInfo.fileName},
 				"partNo":    []string{strconv.Itoa(chunkNumber)},
 				"channelId": []string{strconv.FormatInt(w.uploadInfo.channelID, 10)},
@@ -225,7 +212,7 @@ func (w *bufferingChunkWriter) Close(ctx context.Context) error {
 	src := object.NewStaticObjectInfo(w.remote, w.src.ModTime(ctx), w.totalSize, false, nil, w.f)
 
 	// Upload using the ordered chunk reader
-	uploadInfo, err := w.o.uploadMultipart(ctx, chunkReader, src)
+	uploadInfo, err := w.o.uploadMultipart(ctx, w.remote, chunkReader, src)
 	if err != nil {
 		return fmt.Errorf("failed to upload buffered chunks: %w", err)
 	}
@@ -314,7 +301,7 @@ func (r *orderedChunkReader) cleanup() {
 
 // uploadWithBuffering buffers data to memory or temp file for unknown-sized uploads
 // Returns the uploadInfo, final size, and any error
-func (o *Object) uploadWithBuffering(ctx context.Context, in io.Reader, src fs.ObjectInfo) (*uploadInfo, int64, error) {
+func (o *Object) uploadWithBuffering(ctx context.Context, remote string, in io.Reader, src fs.ObjectInfo) (*uploadInfo, int64, error) {
 	var buffer bytes.Buffer
 	var tempFile *os.File
 	var written int64
@@ -383,13 +370,13 @@ func (o *Object) uploadWithBuffering(ctx context.Context, in io.Reader, src fs.O
 		}
 
 		fs.Debugf(o, "Uploading %d bytes from temp file", written)
-		srcWithSize := object.NewStaticObjectInfo(src.Remote(), src.ModTime(ctx), written, false, nil, o.fs)
-		uploadInfo, err = o.uploadMultipart(ctx, tempFile, srcWithSize)
+		srcWithSize := object.NewStaticObjectInfo(remote, src.ModTime(ctx), written, false, nil, o.fs)
+		uploadInfo, err = o.uploadMultipart(ctx, remote, tempFile, srcWithSize)
 	} else {
 		// Upload from memory buffer
 		fs.Debugf(o, "Uploading %d bytes from memory buffer", written)
-		srcWithSize := object.NewStaticObjectInfo(src.Remote(), src.ModTime(ctx), written, false, nil, o.fs)
-		uploadInfo, err = o.uploadMultipart(ctx, bytes.NewReader(buffer.Bytes()), srcWithSize)
+		srcWithSize := object.NewStaticObjectInfo(remote, src.ModTime(ctx), written, false, nil, o.fs)
+		uploadInfo, err = o.uploadMultipart(ctx, remote, bytes.NewReader(buffer.Bytes()), srcWithSize)
 	}
 
 	if err != nil {
@@ -399,9 +386,9 @@ func (o *Object) uploadWithBuffering(ctx context.Context, in io.Reader, src fs.O
 	return uploadInfo, written, nil
 }
 
-func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadInfo, error) {
+func (o *Object) prepareUpload(ctx context.Context, remote string, src fs.ObjectInfo) (*uploadInfo, error) {
 
-	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, src.Remote(), true)
+	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, remote, true)
 
 	if err != nil {
 		return nil, err
@@ -410,7 +397,7 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadI
 		return &uploadInfo{fileName: leaf, dir: directoryID}, nil
 	}
 
-	uploadID := getMD5Hash(fmt.Sprintf("%s:%s:%d:%d", directoryID, leaf, src.Size(), o.fs.userId))
+	uploadID := getMD5Hash(fmt.Sprintf("%s:%s:%d:%d:%d", directoryID, leaf, src.Size(), src.ModTime(ctx).UTC().UnixNano(), o.fs.userId))
 
 	var (
 		uploadParts    []api.PartFile
@@ -467,11 +454,11 @@ func (o *Object) prepareUpload(ctx context.Context, src fs.ObjectInfo) (*uploadI
 	}, nil
 }
 
-func (o *Object) uploadMultipart(ctx context.Context, in io.Reader, src fs.ObjectInfo) (*uploadInfo, error) {
+func (o *Object) uploadMultipart(ctx context.Context, remote string, in io.Reader, src fs.ObjectInfo) (*uploadInfo, error) {
 
 	size := src.Size()
 
-	uploadInfo, err := o.prepareUpload(ctx, src)
+	uploadInfo, err := o.prepareUpload(ctx, remote, src)
 
 	if err != nil {
 		return nil, err
@@ -500,14 +487,6 @@ func (o *Object) uploadMultipart(ctx context.Context, in io.Reader, src fs.Objec
 				n = src.Size() - uploadedSize
 			}
 
-			chunkName := uploadInfo.fileName
-
-			if o.fs.opt.RandomChunkName {
-				chunkName = getMD5Hash(uuid.New().String())
-			} else if totalChunks > 1 {
-				chunkName = fmt.Sprintf("%s.part.%03d", chunkName, chunkNo)
-			}
-
 			partReader := io.LimitReader(in, n)
 
 			opts := rest.Opts{
@@ -517,7 +496,6 @@ func (o *Object) uploadMultipart(ctx context.Context, in io.Reader, src fs.Objec
 				ContentLength: &n,
 				ContentType:   "application/octet-stream",
 				Parameters: url.Values{
-					"partName":  []string{chunkName},
 					"fileName":  []string{uploadInfo.fileName},
 					"partNo":    []string{strconv.Itoa(chunkNo)},
 					"channelId": []string{strconv.FormatInt(uploadInfo.channelID, 10)},
