@@ -13,7 +13,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rclone/rclone/backend/teldrive/api"
@@ -30,7 +29,6 @@ import (
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/rest"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -38,7 +36,7 @@ const (
 	maxChunkSize     = 2000 * fs.Mebi // 125 × 16MB (Telegram limit)
 	defaultChunkSize = 512 * fs.Mebi  // 32 × 16MB for optimal BLAKE3 tree hashing
 	minChunkSize     = 64 * fs.Mebi   // 4 × 16MB
-	authCookieName   = "access_token"
+	apiKeyHeaderName = "X-Api-Key"
 )
 
 var telDriveHash hash.Type
@@ -49,8 +47,8 @@ func init() {
 		Description: "Tel Drive",
 		NewFs:       NewFs,
 		Options: []fs.Option{{
-			Help:      "Access Token Cookie",
-			Name:      "access_token",
+			Help:      "API Key",
+			Name:      "api_key",
 			Sensitive: true,
 		}, {
 			Help:      "Api Host",
@@ -61,14 +59,12 @@ func init() {
 			Name:    "chunk_size",
 			Default: defaultChunkSize,
 		}, {
+			Name: "link_password",
+			Help: "Password to set on created public links",
+		}, {
 			Help:    "Page Size for listing files",
 			Name:    "page_size",
 			Default: 500,
-		}, {
-			Name:     "random_chunk_name",
-			Default:  true,
-			Help:     "Random Names For Chunks for Security",
-			Advanced: true,
 		}, {
 			Name:      "channel_id",
 			Help:      "Channel ID",
@@ -115,10 +111,10 @@ func init() {
 type Options struct {
 	ApiHost           string               `config:"api_host"`
 	UploadHost        string               `config:"upload_host"`
-	AccessToken       string               `config:"access_token"`
+	APIKey            string               `config:"api_key"`
+	LinkPassword      string               `config:"link_password"`
 	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`
 	RootFolderID      string               `config:"root_folder_id"`
-	RandomChunkName   bool                 `config:"random_chunk_name"`
 	UploadConcurrency int                  `config:"upload_concurrency"`
 	ChannelID         int64                `config:"channel_id"`
 	EncryptFiles      bool                 `config:"encrypt_files"`
@@ -276,8 +272,11 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	}).Fill(ctx, f)
 
 	client := fshttp.NewClient(ctx)
-	authCookie := http.Cookie{Name: authCookieName, Value: opt.AccessToken}
-	f.srv = rest.NewClient(client).SetRoot(strings.Trim(opt.ApiHost, "/")).SetCookie(&authCookie)
+	f.srv = rest.NewClient(client).SetRoot(strings.Trim(opt.ApiHost, "/"))
+	if opt.APIKey == "" {
+		return nil, errors.New("missing api_key")
+	}
+	f.srv.SetHeader(apiKeyHeaderName, opt.APIKey)
 
 	opts := rest.Opts{
 		Method: "GET",
@@ -299,12 +298,6 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	}
 	if session.UserId == 0 {
 		return nil, errors.New("invalid session")
-	}
-
-	for _, cookie := range sessionResp.Cookies() {
-		if (cookie.Name == authCookieName) && (cookie.Value != "") {
-			config.Set(authCookieName, cookie.Value)
-		}
 	}
 
 	f.userId = session.UserId
@@ -366,8 +359,13 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.
 			"limit":     []string{strconv.FormatInt(options.Limit, 10)},
 			"sort":      []string{"id"},
 			"operation": []string{"list"},
-			"page":      []string{strconv.FormatInt(options.Page, 10)},
 		},
+	}
+	if options.Cursor != "" {
+		opts.Parameters.Set("cursor", options.Cursor)
+	}
+	if options.Status != "" {
+		opts.Parameters.Set("status", options.Status)
 	}
 	var info api.ReadMetadataResponse
 	var resp *http.Response
@@ -410,12 +408,12 @@ func (f *Fs) getRootID(ctx context.Context) (string, error) {
 	return info.Files[0].Id, nil
 }
 
-func (f *Fs) getFileShare(ctx context.Context, id string) (*api.FileShare, error) {
+func (f *Fs) getFileShares(ctx context.Context, id string) ([]api.FileShare, error) {
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/api/files/" + id + "/share",
+		Path:   "/api/files/" + id + "/shares",
 	}
-	res := api.FileShare{}
+	res := []api.FileShare{}
 	var (
 		resp *http.Response
 		err  error
@@ -430,10 +428,22 @@ func (f *Fs) getFileShare(ctx context.Context, id string) (*api.FileShare, error
 		}
 		return nil, err
 	}
-	if res.ExpiresAt != nil && res.ExpiresAt.UTC().Before(time.Now().UTC()) {
-		return nil, fs.ErrorObjectNotFound
+	return res, nil
+}
+
+func (f *Fs) getFileShare(ctx context.Context, id string) (*api.FileShare, error) {
+	res, err := f.getFileShares(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	return &res, nil
+	now := time.Now().UTC()
+	for i := range res {
+		if res[i].ExpiresAt != nil && res[i].ExpiresAt.UTC().Before(now) {
+			continue
+		}
+		return &res[i], nil
+	}
+	return nil, fs.ErrorObjectNotFound
 }
 
 // List the objects and directories in dir into entries.  The
@@ -449,44 +459,18 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 
 	opts := &api.MetadataRequestOptions{
 		Limit: f.opt.PageSize,
-		Page:  1,
 	}
-
 	files := []api.FileInfo{}
-
-	info, err := f.readMetaDataForPath(ctx, dir, opts)
-
-	if err != nil {
-		return nil, err
-	}
-
-	files = append(files, info.Files...)
-	mu := sync.Mutex{}
-	if info.Meta.TotalPages > 1 {
-		g, _ := errgroup.WithContext(ctx)
-
-		g.SetLimit(8)
-
-		for i := 2; i <= info.Meta.TotalPages; i++ {
-			page := i
-			g.Go(func() error {
-				opts := &api.MetadataRequestOptions{
-					Limit: f.opt.PageSize,
-					Page:  int64(page),
-				}
-				info, err := f.readMetaDataForPath(ctx, dir, opts)
-				if err != nil {
-					return err
-				}
-				mu.Lock()
-				files = append(files, info.Files...)
-				mu.Unlock()
-				return nil
-			})
-		}
-		if err := g.Wait(); err != nil {
+	for {
+		info, err := f.readMetaDataForPath(ctx, dir, opts)
+		if err != nil {
 			return nil, err
 		}
+		files = append(files, info.Files...)
+		if info.Meta.NextCursor == "" {
+			break
+		}
+		opts.Cursor = info.Meta.NextCursor
 	}
 
 	for _, item := range files {
@@ -640,14 +624,14 @@ func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 	if size < 0 {
 		// Unknown size - buffer to memory/temp file first
 		fs.Debugf(f, "putUnchecked: unknown size, buffering to memory (threshold: %d bytes)", memoryBufferThreshold)
-		uploadInfo, size, err = o.uploadWithBuffering(ctx, in, src)
+		uploadInfo, size, err = o.uploadWithBuffering(ctx, src.Remote(), in, src)
 		if err != nil {
 			return err
 		}
 		// Create new src with known size for createFile
 		src = object.NewStaticObjectInfo(src.Remote(), src.ModTime(ctx), size, false, nil, f)
 	} else {
-		uploadInfo, err = o.uploadMultipart(ctx, in, src)
+		uploadInfo, err = o.uploadMultipart(ctx, src.Remote(), in, src)
 		if err != nil {
 			return err
 		}
@@ -725,12 +709,12 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if size < 0 {
 		// Unknown size - buffer to memory/temp file first
 		fs.Debugf(o, "Update: unknown size, buffering to memory (threshold: %d bytes)", memoryBufferThreshold)
-		uploadInfo, size, err = o.uploadWithBuffering(ctx, in, src)
+		uploadInfo, size, err = o.uploadWithBuffering(ctx, remote, in, src)
 		if err != nil {
 			return err
 		}
 	} else {
-		uploadInfo, err = o.uploadMultipart(ctx, in, src)
+		uploadInfo, err = o.uploadMultipart(ctx, remote, in, src)
 		if err != nil {
 			return err
 		}
@@ -766,6 +750,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	o.modTime = modTime
 	o.size = size
+	o.hash = ""
 
 	return nil
 }
@@ -918,11 +903,6 @@ func (f *Fs) processSSEEvent(data string, notifyFunc func(string, fs.EntryType))
 
 	fullPath := path.Join(parentPath, event.Source.Name)
 
-	// Filter: only notify for paths within root
-	if !strings.HasPrefix(fullPath, f.root) {
-		return nil
-	}
-
 	var entryType fs.EntryType
 	switch event.Source.Type {
 	case "folder":
@@ -934,13 +914,11 @@ func (f *Fs) processSSEEvent(data string, notifyFunc func(string, fs.EntryType))
 	}
 
 	// Handle move events - notify both old and new locations
-	if event.Type == "file_move" && event.Source.DestParentId != "" {
-		if oldParentPath, ok := f.dirCache.GetInv(event.Source.DestParentId); ok {
-			oldPath := path.Join(oldParentPath, event.Source.Name)
-			if strings.HasPrefix(oldPath, f.root) {
-				fs.Debugf(f, "SSE move event: old path %s", oldPath)
-				notifyFunc(oldPath, entryType)
-			}
+	if event.Type == "files.moved" && event.Source.DestParentId != "" {
+		if newParentPath, ok := f.dirCache.GetInv(event.Source.DestParentId); ok {
+			newPath := path.Join(newParentPath, event.Source.Name)
+			fs.Debugf(f, "SSE move event: new path %s", newPath)
+			notifyFunc(newPath, entryType)
 		}
 	}
 
@@ -982,7 +960,7 @@ func (f *Fs) OpenChunkWriter(
 		}, nil
 	}
 
-	uploadInfo, err := o.prepareUpload(ctx, src)
+	uploadInfo, err := o.prepareUpload(ctx, remote, src)
 
 	if err != nil {
 		return info, nil, fmt.Errorf("failed to prepare upload: %w", err)
@@ -1047,7 +1025,6 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 	if check {
 		info, err := f.readMetaDataForPath(ctx, dir, &api.MetadataRequestOptions{
 			Limit: 1,
-			Page:  1,
 		})
 		if err != nil {
 			return err
@@ -1057,16 +1034,10 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 		}
 	}
 
-	opts := rest.Opts{
-		Method:     "POST",
-		Path:       "/api/files/delete",
-		NoResponse: true,
-	}
-	rm := api.RemoveFileRequest{
-		Files: []string{directoryID},
-	}
+	opts := rest.Opts{Method: "POST", Path: "/api/files/delete", NoResponse: true}
+	body := &api.RemoveFileRequest{Files: []string{directoryID}}
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, &rm, nil)
+		resp, err := f.srv.CallJSON(ctx, &opts, body, nil)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -1157,16 +1128,10 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 }
 
 func (o *Object) Remove(ctx context.Context) error {
-	opts := rest.Opts{
-		Method:     "POST",
-		Path:       "/api/files/delete",
-		NoResponse: true,
-	}
-	delete := api.RemoveFileRequest{
-		Files: []string{o.id},
-	}
+	opts := rest.Opts{Method: "POST", Path: "/api/files/delete", NoResponse: true}
+	body := &api.RemoveFileRequest{Files: []string{o.id}}
 	err := o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, nil)
+		resp, err := o.fs.srv.CallJSON(ctx, &opts, body, nil)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -1189,29 +1154,76 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 		id = o.(fs.IDer).ID()
 	}
 	if unlink {
-		opts := rest.Opts{
-			Method:     "DELETE",
-			Path:       "/api/files/" + id + "/share",
-			NoResponse: true,
+		shares, err := f.getFileShares(ctx, id)
+		if err != nil {
+			if errors.Is(err, fs.ErrorObjectNotFound) {
+				return "", nil
+			}
+			return "", err
 		}
-		f.pacer.Call(func() (bool, error) {
-			resp, err := f.srv.Call(ctx, &opts)
-			return shouldRetry(ctx, resp, err)
-		})
+		now := time.Now().UTC()
+		for _, share := range shares {
+			if share.ExpiresAt != nil && share.ExpiresAt.UTC().Before(now) {
+				continue
+			}
+			opts := rest.Opts{
+				Method:     "DELETE",
+				Path:       "/api/files/" + id + "/shares/" + share.ID,
+				NoResponse: true,
+			}
+			err = f.pacer.Call(func() (bool, error) {
+				resp, err := f.srv.Call(ctx, &opts)
+				return shouldRetry(ctx, resp, err)
+			})
+			if err != nil {
+				return "", err
+			}
+		}
 		return "", nil
 	}
 
+	recreate := f.opt.LinkPassword != "" || expire < fs.DurationOff
 	share, err := f.getFileShare(ctx, id)
 	if err != nil {
 		if !errors.Is(err, fs.ErrorObjectNotFound) {
 			return "", err
 		}
+		share = nil
+	} else if recreate {
+		shares, err := f.getFileShares(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		now := time.Now().UTC()
+		for _, existingShare := range shares {
+			if existingShare.ExpiresAt != nil && existingShare.ExpiresAt.UTC().Before(now) {
+				continue
+			}
+			opts := rest.Opts{
+				Method:     "DELETE",
+				Path:       "/api/files/" + id + "/shares/" + existingShare.ID,
+				NoResponse: true,
+			}
+			err = f.pacer.Call(func() (bool, error) {
+				resp, err := f.srv.Call(ctx, &opts)
+				return shouldRetry(ctx, resp, err)
+			})
+			if err != nil {
+				return "", err
+			}
+		}
+		share = nil
+	}
+	if share == nil {
 		opts := rest.Opts{
 			Method:     "POST",
-			Path:       "/api/files/" + id + "/share",
+			Path:       "/api/files/" + id + "/shares",
 			NoResponse: true,
 		}
-		payload := api.FileShare{}
+		payload := api.FileShareCreate{}
+		if f.opt.LinkPassword != "" {
+			payload.Password = f.opt.LinkPassword
+		}
 		if expire < fs.DurationOff {
 			dur := time.Now().Add(time.Duration(expire)).UTC()
 			payload.ExpiresAt = &dur
@@ -1239,7 +1251,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 	opts := rest.Opts{
 		Method:  "GET",
-		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
+		Path:    fmt.Sprintf("/api/files/%s/content", o.id),
 		Options: options,
 	}
 
@@ -1287,14 +1299,14 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		Method: "POST",
 		Path:   "/api/files/" + srcObj.id + "/copy",
 	}
-	copy := api.CopyFile{
-		Newname:     dstLeaf,
+	payload := api.FileCopy{
 		Destination: directoryID,
-		ModTime:     srcObj.ModTime(ctx).UTC(),
+		NewName:     dstLeaf,
+		UpdatedAt:   srcObj.ModTime(ctx).UTC(),
 	}
 	var info api.FileInfo
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, &copy, &info)
+		resp, err := f.srv.CallJSON(ctx, &opts, &payload, &info)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -1320,7 +1332,7 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 
 	total := int64(0)
 	for category := range stats {
-		total += stats[category].Size
+		total += stats[category].TotalSize
 	}
 	return &fs.Usage{Used: fs.NewUsageValue(total)}, nil
 }

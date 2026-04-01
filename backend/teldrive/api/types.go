@@ -4,7 +4,7 @@ package api
 import "time"
 
 type Error struct {
-	Code    bool   `json:"code,omitempty"`
+	Code    int    `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 }
 
@@ -17,11 +17,8 @@ func (e Error) Error() string {
 }
 
 type Part struct {
-	Id    int64
-	Size  int64
-	Name  string
-	Start int64
-	End   int64
+	ID   int64  `json:"id"`
+	Salt string `json:"salt,omitempty"`
 }
 
 // FileInfo represents a file when listing folder contents
@@ -37,9 +34,7 @@ type FileInfo struct {
 }
 
 type Meta struct {
-	Count       int `json:"count,omitempty"`
-	TotalPages  int `json:"totalPages,omitempty"`
-	CurrentPage int `json:"currentPage,omitempty"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 type ReadMetadataResponse struct {
@@ -48,42 +43,33 @@ type ReadMetadataResponse struct {
 }
 
 type MetadataRequestOptions struct {
-	Page  int64
-	Limit int64
-}
-
-type CreateDirRequest struct {
-	Path string `json:"path"`
+	Cursor string
+	Limit  int64
+	Status string
 }
 
 type PartFile struct {
-	Name       string `json:"name"`
-	PartId     int    `json:"partId"`
-	PartNo     int    `json:"partNo"`
-	TotalParts int    `json:"totalParts"`
-	Size       int64  `json:"size"`
-	ChannelID  int64  `json:"channelId"`
-	Encrypted  bool   `json:"encrypted"`
-	Salt       string `json:"salt"`
-}
-
-type FilePart struct {
-	ID   int    `json:"id"`
-	Salt string `json:"salt,omitempty"`
+	Name      string `json:"name"`
+	PartId    int    `json:"partId"`
+	PartNo    int    `json:"partNo"`
+	Size      int64  `json:"size"`
+	ChannelID int64  `json:"channelId"`
+	Encrypted bool   `json:"encrypted"`
+	Salt      string `json:"salt"`
 }
 
 type CreateFileRequest struct {
-	Name      string     `json:"name"`
-	Type      string     `json:"type"`
-	Path      string     `json:"path,omitempty"`
-	MimeType  string     `json:"mimeType,omitempty"`
-	Size      int64      `json:"size,omitempty"`
-	ChannelID int64      `json:"channelId,omitempty"`
-	Encrypted bool       `json:"encrypted,omitempty"`
-	Parts     []FilePart `json:"parts,omitempty"`
-	ParentId  string     `json:"parentId,omitempty"`
-	ModTime   time.Time  `json:"updatedAt"`
-	UploadId  string     `json:"uploadId"`
+	Name      string    `json:"name"`
+	Type      string    `json:"type"`
+	Path      string    `json:"path,omitempty"`
+	MimeType  string    `json:"mimeType,omitempty"`
+	Size      int64     `json:"size,omitempty"`
+	ChannelID int64     `json:"channelId,omitempty"`
+	Encrypted bool      `json:"encrypted,omitempty"`
+	Parts     []Part    `json:"parts,omitempty"`
+	ParentId  string    `json:"parentId,omitempty"`
+	ModTime   time.Time `json:"updatedAt"`
+	UploadId  string    `json:"uploadId"`
 }
 
 type MoveFileRequest struct {
@@ -91,15 +77,11 @@ type MoveFileRequest struct {
 	DestinationLeaf string   `json:"destinationName,omitempty"`
 	Files           []string `json:"ids,omitempty"`
 }
-type DirMove struct {
-	Source      string `json:"source"`
-	Destination string `json:"destination"`
-}
 
 type UpdateFileInformation struct {
 	Name      string     `json:"name,omitempty"`
 	ModTime   *time.Time `json:"updatedAt,omitempty"`
-	Parts     []FilePart `json:"parts,omitempty"`
+	Parts     []Part     `json:"parts,omitempty"`
 	Size      int64      `json:"size,omitempty"`
 	UploadId  string     `json:"uploadId,omitempty"`
 	ChannelID int64      `json:"channelId,omitempty"`
@@ -108,28 +90,38 @@ type UpdateFileInformation struct {
 }
 
 type RemoveFileRequest struct {
-	Source string   `json:"source,omitempty"`
-	Files  []string `json:"ids,omitempty"`
+	Files []string `json:"ids,omitempty"`
 }
-type CopyFile struct {
-	Newname     string    `json:"newName"`
+type FileCopy struct {
 	Destination string    `json:"destination"`
-	ModTime     time.Time `json:"updatedAt"`
+	NewName     string    `json:"newName,omitempty"`
+	UpdatedAt   time.Time `json:"updatedAt,omitempty"`
 }
 
 type Session struct {
-	UserName string `json:"userName"`
-	UserId   int64  `json:"userId"`
-	Hash     string `json:"hash"`
+	UserName  string    `json:"userName"`
+	UserId    int64     `json:"userId"`
+	Name      string    `json:"name"`
+	IsPremium bool      `json:"isPremium"`
+	SessionID string    `json:"sessionId"`
+	Expires   time.Time `json:"expires"`
 }
 
 type FileShare struct {
 	ID        string     `json:"id,omitempty"`
+	Protected bool       `json:"protected,omitempty"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+}
+
+type FileShareCreate struct {
+	Password  string     `json:"password,omitempty"`
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 type CategorySize struct {
-	Size int64 `json:"totalSize"`
+	Category   string `json:"category"`
+	TotalFiles int64  `json:"totalFiles"`
+	TotalSize  int64  `json:"totalSize"`
 }
 
 type EventSource struct {
@@ -137,7 +129,7 @@ type EventSource struct {
 	Name         string `json:"name"`
 	Type         string `json:"type"`
 	ParentId     string `json:"parentId"`
-	DestParentId string `json:"destParentId"`
+	DestParentId string `json:"destParentId,omitempty"`
 }
 
 type Event struct {

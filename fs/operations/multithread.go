@@ -594,7 +594,7 @@ func multiThreadCopy(ctx context.Context, f fs.Fs, remote string, src fs.Object,
 		}
 
 		g.Go(func() error {
-			err := mc.copyChunk(gCtx, chunk, chunkWriter)
+			err := mc.copyChunk(gCtx, chunk, chunkWriter, start, end, size, rw)
 			if err != nil {
 				return err
 			}
