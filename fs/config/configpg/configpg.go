@@ -423,8 +423,7 @@ func (s *Storage) Save() error {
 func (s *Storage) Serialize() (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	j, err := json.Marshal(s.sections)
-	return string(j), err
+	return config.SerializeConfigINI(s.sections), nil
 }
 
 func (s *Storage) Close() error {

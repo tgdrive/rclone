@@ -44,7 +44,7 @@ func AddFlags(ci *fs.ConfigInfo, flagSet *pflag.FlagSet) {
 	// Add flags we haven't converted into options yet
 	flags.CountVarP(flagSet, &verbose, "verbose", "v", "Print lots more stuff (repeat for more)", "Logging,Important")
 	flags.BoolVarP(flagSet, &quiet, "quiet", "q", false, "Print as little stuff as possible", "Logging")
-	flags.StringVarP(flagSet, &configPath, "config", "", config.GetConfigPath(), "Config file", "Config")
+	flags.StringVarP(flagSet, &configPath, "config", "", config.GetConfigPath(), "Config file or postgres:// connection URL", "Config")
 	flags.StringVarP(flagSet, &cacheDir, "cache-dir", "", config.GetCacheDir(), "Directory rclone will use for caching", "Config")
 	flags.StringVarP(flagSet, &tempDir, "temp-dir", "", os.TempDir(), "Directory rclone will use for temporary files", "Config")
 	flags.BoolVarP(flagSet, &dumpHeaders, "dump-headers", "", false, "Dump HTTP headers - may contain sensitive info", "Debugging")

@@ -408,9 +408,9 @@ func TestSerialize(t *testing.T) {
 
 	serialized, err := s.Serialize()
 	require.NoError(t, err)
-	assert.Contains(t, serialized, `"remote"`)
-	assert.Contains(t, serialized, `"drive"`)
-	assert.Contains(t, serialized, `"abc"`)
+	assert.Contains(t, serialized, "[remote]")
+	assert.Contains(t, serialized, "type = drive")
+	assert.Contains(t, serialized, "token = abc")
 }
 
 func TestClose(t *testing.T) {

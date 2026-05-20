@@ -685,13 +685,27 @@ When using a database-backed config (e.g. |--config postgres://...|), this
 command reads a file-based rclone config and imports all remotes into the
 database.
 
-Example:
+The PostgreSQL connection URL supports the following query parameters:
+
+- |search_path| — auto-creates the given schema for dedicated config storage.
+- |config_name| — selects a named config within the schema (default: |"main"|).
+  Multiple named configs can coexist in the same schema, isolated by name.
+
+If |--from| is not specified, it defaults to the current config file path.
+
+Examples:
 
 |||sh
+# Migrate to the default config ("main") in the public schema
 rclone --config postgres://user:pass@localhost/rcloneconfig config migrate --from ~/.config/rclone/rclone.conf
-|||
 
-If |--from| is not specified, it defaults to the current config file path.`, "|", "`"),
+# Migrate to a named config in a dedicated schema
+rclone --config "postgres://user:pass@localhost/rcloneconfig?search_path=rclone&config_name=work" config migrate --from ~/.config/rclone/work.conf
+
+# Multiple named configs in the same schema
+rclone --config "postgres://user:pass@localhost/rcloneconfig?config_name=personal" config migrate --from ~/.config/rclone/rclone.conf
+rclone --config "postgres://user:pass@localhost/rcloneconfig?config_name=work" config migrate --from ~/.config/rclone/work.conf
+|||`, "|", "`"),
 	Annotations: map[string]string{
 		"versionIntroduced": "v1.71",
 	},
