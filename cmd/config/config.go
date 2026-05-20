@@ -13,6 +13,7 @@ import (
 	"github.com/rclone/rclone/cmd"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config"
+	"github.com/rclone/rclone/fs/config/configpg"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/fs/rc"
 	"github.com/spf13/cobra"
@@ -38,6 +39,7 @@ func init() {
 	configCommand.AddCommand(configUserInfoCommand)
 	configCommand.AddCommand(configEncryptionCommand)
 	configCommand.AddCommand(configStringCommand)
+	configCommand.AddCommand(configMigrateCommand)
 }
 
 var configCommand = &cobra.Command{
@@ -663,6 +665,64 @@ require further quoting which is very shell dependent.
 		out.WriteRune(':')
 		out.WriteString(fsPath)
 		fmt.Println(out.String())
+		return nil
+	},
+}
+
+var migrateFrom string
+
+func init() {
+	flags.StringVarP(configMigrateCommand.Flags(), &migrateFrom, "from", "", config.GetConfigPath(),
+		"Path to config file to import from", "Config")
+}
+
+var configMigrateCommand = &cobra.Command{
+	Use:   "migrate",
+	Short: `Migrate config from a file to the current config storage.`,
+	Long: strings.ReplaceAll(`Migrate an existing rclone config file into the active config storage.
+
+When using a database-backed config (e.g. |--config postgres://...|), this
+command reads a file-based rclone config and imports all remotes into the
+database.
+
+The PostgreSQL connection URL supports the following query parameters:
+
+- |search_path| — auto-creates the given schema for dedicated config storage.
+- |config_name| — selects a named config within the schema (default: |"main"|).
+  Multiple named configs can coexist in the same schema, isolated by name.
+
+If |--from| is not specified, it defaults to the current config file path.
+
+Examples:
+
+|||sh
+# Migrate to the default config ("main") in the public schema
+rclone --config postgres://user:pass@localhost/rcloneconfig config migrate --from ~/.config/rclone/rclone.conf
+
+# Migrate to a named config in a dedicated schema
+rclone --config "postgres://user:pass@localhost/rcloneconfig?search_path=rclone&config_name=work" config migrate --from ~/.config/rclone/work.conf
+
+# Multiple named configs in the same schema
+rclone --config "postgres://user:pass@localhost/rcloneconfig?config_name=personal" config migrate --from ~/.config/rclone/rclone.conf
+rclone --config "postgres://user:pass@localhost/rcloneconfig?config_name=work" config migrate --from ~/.config/rclone/work.conf
+|||`, "|", "`"),
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.71",
+	},
+	RunE: func(command *cobra.Command, args []string) error {
+		cmd.CheckArgs(0, 0, command, args)
+		connString := config.GetConfigPath()
+		if connString == "" {
+			return errors.New("no config storage URL set (use --config) - nothing to migrate to")
+		}
+		if migrateFrom == "" {
+			return errors.New("no source config file (use --from)")
+		}
+		fmt.Printf("Migrating config from %q to %q...\n", migrateFrom, connString)
+		if err := configpg.MigrateFromFile(context.Background(), connString, migrateFrom); err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+		fmt.Println("Migration complete.")
 		return nil
 	},
 }
