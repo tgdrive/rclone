@@ -293,5 +293,10 @@ func (s *Storage) DeleteKey(section string, key string) bool {
 	return s.gc.DeleteKey(section, key)
 }
 
+// Close is a no-op for file-based storage.
+func (s *Storage) Close() error {
+	return nil
+}
+
 // Check the interface is satisfied
 var _ config.Storage = (*Storage)(nil)

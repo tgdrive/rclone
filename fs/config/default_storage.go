@@ -102,6 +102,10 @@ func (s *defaultStorage) Save() error {
 	return nil
 }
 
+func (s *defaultStorage) Close() error {
+	return nil
+}
+
 // Serialize the config into a string
 func (s *defaultStorage) Serialize() (string, error) {
 	s.mu.RLock()
