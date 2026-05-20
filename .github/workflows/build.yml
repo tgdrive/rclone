@@ -231,7 +231,7 @@ jobs:
             org.opencontainers.image.description=Rclone Docker Image
 
       - name: Publish to Docker
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
