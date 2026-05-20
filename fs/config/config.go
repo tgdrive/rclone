@@ -104,6 +104,10 @@ type Storage interface {
 	// Save the config to permanent storage
 	Save() error
 
+	// Close releases any resources held by the storage.
+	// Implementations that don't hold resources should return nil.
+	Close() error
+
 	// Serialize the config into a string
 	Serialize() (string, error)
 }
@@ -320,15 +324,19 @@ func GetConfigPath() string {
 	return configPath
 }
 
-// SetConfigPath sets new config file path
+// SetConfigPath sets new config file path or storage URL.
 //
-// Checks for empty string, os null device, or special path, all of which indicates in-memory config.
+// Checks for empty string, os null device, or special path, all of which
+// indicates in-memory config. Storage URLs (postgres:// or pg://) are
+// stored as-is without file path normalization.
 func SetConfigPath(path string) (err error) {
 	var cfgPath string
 	if path == "" || path == os.DevNull {
 		cfgPath = ""
 	} else if filepath.Base(path) == noConfigFile {
 		cfgPath = ""
+	} else if isURLPath(path) {
+		cfgPath = path
 	} else if err = file.IsReserved(path); err != nil {
 		return err
 	} else if cfgPath, err = filepath.Abs(path); err != nil {
@@ -338,13 +346,29 @@ func SetConfigPath(path string) (err error) {
 	return nil
 }
 
-// SetData sets new config file storage
+// isURLPath returns true if the path is a storage URL (not a file path).
+func isURLPath(path string) bool {
+	return strings.HasPrefix(path, "postgres://")
+}
+
+// SetData sets new config file storage.
+//
+// This requires a non-empty configPath (set via --config or RCLONE_CONFIG).
+// For non-file storage backends like databases, use SetStorage instead.
 func SetData(newData Storage) {
 	// If no config file, use in-memory config (which is the default)
 	if configPath == "" {
 		return
 	}
 	data = newData
+	dataLoaded = false
+}
+
+// SetStorage replaces the config storage with a new implementation.
+// Unlike SetData, it does not require a config file path, making it
+// suitable for non-file storage backends like databases.
+func SetStorage(s Storage) {
+	data = s
 	dataLoaded = false
 }
 
@@ -359,22 +383,31 @@ var ErrorConfigFileNotFound = errors.New("config file not found")
 // LoadedData ensures the config file storage is loaded and returns it
 func LoadedData() Storage {
 	if !dataLoaded {
-		// Set RCLONE_CONFIG_DIR for backend config and subprocesses
-		// If empty configPath (in-memory only) the value will be "."
-		_ = os.Setenv("RCLONE_CONFIG_DIR", filepath.Dir(configPath))
-		// Load configuration from file (or initialize sensible default if no file or error)
+		// Set RCLONE_CONFIG_DIR for backend config and subprocesses.
+		// For file config paths this is the directory part; for storage
+		// URLs and in-memory config this defaults to the current dir.
+		if isURLPath(configPath) || configPath == "" {
+			_ = os.Setenv("RCLONE_CONFIG_DIR", ".")
+		} else {
+			_ = os.Setenv("RCLONE_CONFIG_DIR", filepath.Dir(configPath))
+		}
+		// Load configuration from storage (or initialize sensible default)
 		if err := data.Load(); err == nil {
-			fs.Debugf(nil, "Using config file from %q", configPath)
+			if isURLPath(configPath) {
+				fs.Debugf(nil, "Using config from database at %q", configPath)
+			} else {
+				fs.Debugf(nil, "Using config file from %q", configPath)
+			}
 			dataLoaded = true
 		} else if err == ErrorConfigFileNotFound {
 			if configPath == "" {
 				fs.Debugf(nil, "Config is memory-only - using defaults")
 			} else {
-				fs.Logf(nil, "Config file %q not found - using defaults", configPath)
+				fs.Logf(nil, "Config %q not found - using defaults", configPath)
 			}
 			dataLoaded = true
 		} else {
-			fs.Fatalf(nil, "Failed to load config file %q: %v", configPath, err)
+			fs.Fatalf(nil, "Failed to load config %q: %v", configPath, err)
 		}
 	}
 	return data
