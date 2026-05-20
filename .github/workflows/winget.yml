@@ -1,7 +1,6 @@
 name: Publish to Winget
-on:
-  release:
-    types: [released]
+# Disabled
+on: workflow_dispatch
 
 permissions:
   contents: read
