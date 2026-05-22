@@ -1,4 +1,11 @@
-// Package api provides types used by the Teldrive API.
+// Package api provides request and response types for the TelDrive REST API.
+//
+// These types map directly to the JSON payloads exchanged with the TelDrive
+// server. They cover authentication (Session), file operations (CRUD, move,
+// copy, share), upload parts, SSE events, and storage categories/quotas.
+//
+// The TelDrive API follows a flat file model where both files and folders
+// are identified by unique IDs, organized via parentId references.
 package api
 
 import "time"

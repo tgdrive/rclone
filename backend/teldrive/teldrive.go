@@ -1,4 +1,18 @@
-// Package teldrive provides an interface to the teldrive storage system.
+// Package teldrive provides an interface to the TelDrive storage system.
+//
+// TelDrive is a self-hosted file storage solution that uses Telegram
+// channels as the underlying storage backend. Files are split into chunks,
+// optionally encrypted, and uploaded as messages in a designated Telegram
+// channel or group. The TelDrive API server indexes and manages the file
+// metadata, providing a file-system-like interface over Telegram's storage.
+//
+// Key features:
+//   - Chunked uploads with configurable chunk size (auto-aligned to 16 MiB)
+//   - BLAKE3 tree hashing for integrity verification across 16 MiB blocks
+//   - Optional client-side encryption via the TelDrive server
+//   - SSE-based real-time change notification
+//   - Server-side copy, move, and directory operations
+//   - Public link sharing with optional password protection
 package teldrive
 
 import (
@@ -32,10 +46,25 @@ import (
 )
 
 const (
-	timeFormat       = time.RFC3339
-	maxChunkSize     = 2000 * fs.Mebi // 125 × 16MB (Telegram limit)
-	defaultChunkSize = 512 * fs.Mebi  // 32 × 16MB for optimal BLAKE3 tree hashing
-	minChunkSize     = 64 * fs.Mebi   // 4 × 16MB
+	// timeFormat is the format used for timestamps in API requests
+	timeFormat = time.RFC3339
+
+	// maxChunkSize is the maximum upload chunk size (2000 MiB).
+	// This is 125 × 16 MiB blocks, constrained by Telegram's per-message
+	// upload limit.
+	maxChunkSize = 2000 * fs.Mebi
+
+	// defaultChunkSize is the default upload chunk size (512 MiB).
+	// This equals 32 × 16 MiB blocks, chosen for optimal BLAKE3 tree
+	// hashing performance with a good balance of concurrency and memory use.
+	defaultChunkSize = 512 * fs.Mebi
+
+	// minChunkSize is the minimum allowed upload chunk size (64 MiB).
+	// This equals 4 × 16 MiB blocks — smaller values would waste
+	// Telegram message capacity.
+	minChunkSize = 64 * fs.Mebi
+
+	// apiKeyHeaderName is the HTTP header used to pass the API key
 	apiKeyHeaderName = "X-Api-Key"
 )
 
@@ -47,56 +76,110 @@ func init() {
 		Description: "Tel Drive",
 		NewFs:       NewFs,
 		Options: []fs.Option{{
-			Help:      "API Key",
+			Help: `API key for authentication with the TelDrive server.
+
+This is the API token used to authenticate requests. Obtain it from
+your TelDrive dashboard or server admin.
+`,
 			Name:      "api_key",
 			Sensitive: true,
 		}, {
-			Help:      "Api Host",
+			Help: `URL of the TelDrive API server.
+
+The base URL for the TelDrive API endpoint (e.g. https://teldrive.example.com).
+This is required for all operations.
+`,
 			Name:      "api_host",
 			Sensitive: true,
 		}, {
-			Help:    "Chunk Size",
+			Help: `Upload chunk size.
+
+Files larger than this will be uploaded in multiple chunks. The chunk size
+is automatically aligned to the nearest 16 MiB multiple (the BLAKE3 tree
+hash block size) for optimal hashing performance.
+
+Larger chunk sizes reduce the number of API calls but use more memory
+during uploads (one chunk is buffered per concurrent upload stream).
+Minimum: 64 MiB, Maximum: 2000 MiB.
+`,
 			Name:    "chunk_size",
 			Default: defaultChunkSize,
 		}, {
 			Name: "link_password",
-			Help: "Password to set on created public links",
+			Help: `Password to set on created public links.
+
+When set, all public links created via the link command will require
+this password to access. If not set, links will be publicly accessible.
+`,
 		}, {
-			Help:    "Page Size for listing files",
+			Help: `Number of items to return per page when listing files.
+
+Controls the page size for directory listing API calls. Larger values
+reduce the number of API requests needed for directories with many files,
+but may increase response time and memory usage for each request.
+`,
 			Name:    "page_size",
 			Default: 500,
 		}, {
-			Name:      "channel_id",
-			Help:      "Channel ID",
+			Name: "channel_id",
+			Help: `Telegram channel ID where files will be stored.
+
+The ID of the Telegram channel or group used as storage backend by
+TelDrive. This should be the numeric ID of the channel. If the ID is
+negative (e.g. -1001234567890), the -100 prefix will be automatically
+stripped as required by the TelDrive API.
+`,
 			Sensitive: true,
 		}, {
 			Name:     "upload_concurrency",
 			Default:  4,
-			Help:     "Upload Concurrency",
+			Help:     `Number of chunks to upload in parallel per file.
+
+Higher concurrency can speed up large file uploads at the cost of
+more memory usage and potential rate-limiting. Each concurrent upload
+buffers one chunk in memory.
+`,
 			Advanced: true,
-		},
-			{
-				Name:     "threaded_streams",
-				Default:  false,
-				Help:     "Thread Streams",
-				Advanced: true,
-			},
-			{
-				Help:      "Upload Api Host",
-				Name:      "upload_host",
-				Sensitive: true,
-			},
-			{
-				Name:    "encrypt_files",
-				Default: false,
-				Help:    "Enable Native Teldrive Encryption",
-			},
-			{
-				Name:    "hash_enabled",
-				Default: true,
-				Help:    "Enable Blake3 Tree Hashing",
-			},
-			{
+		}, {
+			Name:     "threaded_streams",
+			Default:  false,
+			Help:     `Use threaded message streams for uploads.
+
+When enabled, uploads will use Telegram's threaded message replies
+to organize file parts, which can improve performance in channels
+with many concurrent uploads.
+`,
+			Advanced: true,
+		}, {
+			Help: `Optional alternative URL for upload API calls.
+
+If set, upload chunk requests will be sent to this host instead of
+the main api_host. Useful for load-balancing or directing upload
+traffic to a different server or CDN endpoint.
+`,
+			Name:      "upload_host",
+			Sensitive: true,
+		}, {
+			Name:    "encrypt_files",
+			Default: false,
+			Help:    `Enable native TelDrive encryption for stored files.
+
+When enabled, files will be encrypted at rest using TelDrive's
+built-in encryption before being sent to Telegram. The encryption
+keys are managed by the TelDrive server.
+`,
+		}, {
+			Name:    "hash_enabled",
+			Default: true,
+			Help: `Enable BLAKE3 tree hashing for file integrity verification.
+
+Files are split into 16 MiB blocks, each hashed with BLAKE3, then
+the block hashes are combined into a final tree hash. This allows
+rclone to verify upload integrity and detect modifications.
+
+Disable only if the server does not support this hash type.
+`,
+		}, {
 				Name:     config.ConfigEncoding,
 				Help:     config.ConfigEncodingHelp,
 				Advanced: true,
@@ -107,34 +190,38 @@ func init() {
 	telDriveHash = hash.RegisterHash("teldrive", "TelDriveHash", tdhash.Size, tdhash.New)
 }
 
-// Options defines the configuration for this backend
+// Options defines the configuration for this backend.
+// These are set via the rclone config file, command-line flags, or
+// environment variables prefixed with RCLONE_TELDRIVE_.
 type Options struct {
-	ApiHost           string               `config:"api_host"`
-	UploadHost        string               `config:"upload_host"`
-	APIKey            string               `config:"api_key"`
-	LinkPassword      string               `config:"link_password"`
-	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`
-	RootFolderID      string               `config:"root_folder_id"`
-	UploadConcurrency int                  `config:"upload_concurrency"`
-	ChannelID         int64                `config:"channel_id"`
-	EncryptFiles      bool                 `config:"encrypt_files"`
-	PageSize          int64                `config:"page_size"`
-	HashEnabled       bool                 `config:"hash_enabled"`
-	Enc               encoder.MultiEncoder `config:"encoding"`
+	ApiHost           string               `config:"api_host"`       // URL of the TelDrive API server
+	UploadHost        string               `config:"upload_host"`    // Optional alternative host for uploads
+	APIKey            string               `config:"api_key"`        // API authentication token
+	LinkPassword      string               `config:"link_password"`  // Password for public share links
+	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`     // Upload chunk size (auto-aligned to 16 MiB)
+	RootFolderID      string               `config:"root_folder_id"` // Cached root folder ID
+	UploadConcurrency int                  `config:"upload_concurrency"` // Parallel upload streams per file
+	ChannelID         int64                `config:"channel_id"`     // Telegram channel ID for storage
+	EncryptFiles      bool                 `config:"encrypt_files"`  // Enable server-side encryption
+	PageSize          int64                `config:"page_size"`      // Directory listing page size
+	HashEnabled       bool                 `config:"hash_enabled"`   // Enable BLAKE3 tree hashing
+	Enc               encoder.MultiEncoder `config:"encoding"`       // Filename encoding rules
 }
 
-// Fs is the interface a cloud storage system must provide
+// Fs represents a remote TelDrive file system.
+// It manages the connection to the TelDrive API, directory cache,
+// rate-limiting pacers, and per-remote configuration.
 type Fs struct {
-	root         string
-	name         string
-	opt          Options
-	features     *fs.Features
-	srv          *rest.Client
-	pacer        *fs.Pacer
-	ssePacer     *fs.Pacer // Dedicated pacer for SSE connection retries
-	userId       int64
-	dirCache     *dircache.DirCache
-	rootFolderID string
+	root         string            // Root path on this remote
+	name         string            // Name of this remote in the config
+	opt          Options           // Backend configuration
+	features     *fs.Features      // Optional feature flags for this backend
+	srv          *rest.Client      // HTTP client for API calls
+	pacer        *fs.Pacer         // Rate limiter for API requests
+	ssePacer     *fs.Pacer         // Dedicated pacer for SSE connection retries
+	userId       int64             // Authenticated user ID from session
+	dirCache     *dircache.DirCache // Cached directory tree for fast path resolution
+	rootFolderID string            // Root folder ID on the TelDrive server
 }
 
 // Object represents an teldrive object

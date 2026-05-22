@@ -1,3 +1,11 @@
+// Package teldrive implements chunked upload logic for the TelDrive backend.
+//
+// Uploads are split into chunks of configurable size (auto-aligned to 16 MiB).
+// Each chunk is uploaded as a Telegram message via the TelDrive API. The upload
+// process supports resumption: existing chunks are detected and skipped.
+//
+// For unknown-sized streams (e.g. pipes), data is first buffered to memory
+// (up to 10 MiB) and then to a temporary file before uploading.
 package teldrive
 
 import (
@@ -6,17 +14,17 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
-	"github.com/rclone/rclone/backend/teldrive/api"
-	"github.com/rclone/rclone/fs/object"
-	"github.com/rclone/rclone/fs/operations"
-	"github.com/rclone/rclone/lib/pool"
-	"github.com/rclone/rclone/lib/rest"
 	"io"
 	"net/url"
 	"os"
 	"strconv"
 
+	"github.com/rclone/rclone/backend/teldrive/api"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/object"
+	"github.com/rclone/rclone/fs/operations"
+	"github.com/rclone/rclone/lib/pool"
+	"github.com/rclone/rclone/lib/rest"
 )
 
 // memoryBufferThreshold is the size limit for memory buffering
