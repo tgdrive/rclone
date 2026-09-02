@@ -92,6 +92,7 @@ See the following for detailed instructions for
 - [SMB](/smb/)
 - [Storj](/storj/)
 - [SugarSync](/sugarsync/)
+- [TelDrive](/teldrive/)
 - [Union](/union/)
 - [Uloz.to](/ulozto/)
 - [WebDAV](/webdav/)

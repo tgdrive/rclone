@@ -126,6 +126,7 @@ directories to and from different cloud storage providers.
 - Spectra Logic [:page_facing_up:](https://rclone.org/s3/#spectralogic)
 - Storj [:page_facing_up:](https://rclone.org/storj/)
 - SugarSync [:page_facing_up:](https://rclone.org/sugarsync/)
+- TelDrive [:page_facing_up:](https://rclone.org/teldrive/)
 - Synology C2 Object Storage [:page_facing_up:](https://rclone.org/s3/#synology-c2)
 - Tencent Cloud Object Storage (COS) [:page_facing_up:](https://rclone.org/s3/#tencent-cos)
 - Uloz.to [:page_facing_up:](https://rclone.org/ulozto/)
