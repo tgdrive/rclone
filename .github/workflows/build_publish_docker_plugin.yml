@@ -4,15 +4,8 @@
 
 name: Release Build for Docker Plugin
 
-on:
-  release:
-    types: [published]
-  workflow_dispatch:
-    inputs:
-      manual:
-        description: Manual run (bypass default conditions)
-        type: boolean
-        default: true
+# Disabled — Docker plugin built via release.yml
+on: workflow_dispatch
 
 permissions:
   contents: read

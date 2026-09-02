@@ -4,19 +4,8 @@
 
 name: Build & Push Docker Images
 
-# Trigger the workflow on push or pull request
-on:
-  push:
-    branches:
-      - '**'
-    tags:
-      - '**'
-  workflow_dispatch:
-    inputs:
-      manual:
-        description: Manual run (bypass default conditions)
-        type: boolean
-        default: true
+# Disabled — Docker images built via release.yml
+on: workflow_dispatch
 
 permissions:
   contents: read
