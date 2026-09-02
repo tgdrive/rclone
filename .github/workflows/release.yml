@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -126,7 +127,7 @@ jobs:
       - name: Build rclone
         run: |
           if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then make release_dep_linux ; fi
-          make cross
+          eval "go run bin/cross-compile.go -release current $BUILD_FLAGS -tags \"$GOTAGS\" $BUILD_ARGS ${{ github.ref_name }}"
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7

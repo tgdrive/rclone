@@ -1,4 +1,18 @@
-// Package teldrive provides an interface to the teldrive storage system.
+// Package teldrive provides an interface to the TelDrive storage system.
+//
+// TelDrive is a self-hosted file storage solution that uses Telegram
+// channels as the underlying storage backend. Files are split into chunks,
+// optionally encrypted, and uploaded as messages in a designated Telegram
+// channel or group. The TelDrive API server indexes and manages the file
+// metadata, providing a file-system-like interface over Telegram's storage.
+//
+// Key features:
+//   - Chunked uploads with configurable chunk size (auto-aligned to 16 MiB)
+//   - BLAKE3 tree hashing for integrity verification across 16 MiB blocks
+//   - Optional client-side encryption via the TelDrive server
+//   - SSE-based real-time change notification
+//   - Server-side copy, move, and directory operations
+//   - Public link sharing with optional password protection
 package teldrive
 
 import (
@@ -13,9 +27,9 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rclone/rclone/backend/teldrive/api"
 	"github.com/rclone/rclone/backend/teldrive/tdhash"
 	"github.com/rclone/rclone/fs"
@@ -25,20 +39,37 @@ import (
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/fs/hash"
-	"github.com/rclone/rclone/fs/object"
+	"github.com/rclone/rclone/fs/list"
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/encoder"
+	"github.com/rclone/rclone/lib/multipart"
 	"github.com/rclone/rclone/lib/pacer"
 	"github.com/rclone/rclone/lib/rest"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
-	timeFormat       = time.RFC3339
-	maxChunkSize     = 2000 * fs.Mebi // 125 × 16MB (Telegram limit)
-	defaultChunkSize = 512 * fs.Mebi  // 32 × 16MB for optimal BLAKE3 tree hashing
-	minChunkSize     = 64 * fs.Mebi   // 4 × 16MB
-	authCookieName   = "access_token"
+	rootID = "root"
+
+	// timeFormat is the format used for timestamps in API requests
+	timeFormat = time.RFC3339
+
+	// maxChunkSize is the maximum upload chunk size (2000 MiB).
+	// This is 125 × 16 MiB blocks, constrained by Telegram's per-message
+	// upload limit.
+	maxChunkSize = 2000 * fs.Mebi
+
+	// defaultChunkSize is the default upload chunk size (512 MiB).
+	// This equals 32 × 16 MiB blocks, chosen for optimal BLAKE3 tree
+	// hashing performance with a good balance of concurrency and memory use.
+	defaultChunkSize = 512 * fs.Mebi
+
+	// minChunkSize is the minimum allowed upload chunk size (64 MiB).
+	// This equals 4 × 16 MiB blocks — smaller values would waste
+	// Telegram message capacity.
+	minChunkSize = 64 * fs.Mebi
+
+	// apiKeyHeaderName is the HTTP header used to pass the API key
+	apiKeyHeaderName = "X-Api-Key"
 )
 
 var telDriveHash hash.Type
@@ -48,97 +79,131 @@ func init() {
 		Name:        "teldrive",
 		Description: "Tel Drive",
 		NewFs:       NewFs,
+		CommandHelp: commandHelp,
 		Options: []fs.Option{{
-			Help:      "Access Token Cookie",
-			Name:      "access_token",
+			Help: `API key for authentication with the TelDrive server.
+
+This is the API token used to authenticate requests. Obtain it from
+your TelDrive dashboard or server admin.
+`,
+			Name:      "api_key",
 			Sensitive: true,
 		}, {
-			Help:      "Api Host",
+			Help: `URL of the TelDrive API server.
+
+The base URL for the TelDrive API endpoint (e.g. https://teldrive.example.com).
+This is required for all operations.
+`,
 			Name:      "api_host",
 			Sensitive: true,
 		}, {
-			Help:    "Chunk Size",
+			Help: `Upload chunk size.
+
+Files larger than this will be uploaded in multiple chunks. The chunk size
+is automatically aligned to the nearest 16 MiB multiple (the BLAKE3 tree
+hash block size) for optimal hashing performance.
+
+Larger chunk sizes reduce the number of API calls but use more memory
+during uploads (one chunk is buffered per concurrent upload stream).
+Minimum: 64 MiB, Maximum: 2000 MiB.
+`,
 			Name:    "chunk_size",
 			Default: defaultChunkSize,
 		}, {
-			Help:    "Page Size for listing files",
-			Name:    "page_size",
-			Default: 500,
+			Name: "link_password",
+			Help: `Password to set on created public links.
+
+When set, all public links created via the link command will require
+this password to access. If not set, links will be publicly accessible.
+`,
 		}, {
-			Name:     "random_chunk_name",
-			Default:  true,
-			Help:     "Random Names For Chunks for Security",
+			Help: `Number of items to return per page when listing files.
+
+Controls the page size for directory listing API calls. Larger values
+reduce the number of API requests needed for directories with many files,
+but may increase response time and memory usage for each request.
+`,
+			Name:    "page_size",
+			Default: 200,
+		}, {
+			Name:    "upload_concurrency",
+			Default: 4,
+			Help: `Number of chunks to upload in parallel per file.
+
+Higher concurrency can speed up large file uploads at the cost of
+more memory usage and potential rate-limiting. Each concurrent upload
+buffers one chunk in memory.
+`,
 			Advanced: true,
 		}, {
-			Name:      "channel_id",
-			Help:      "Channel ID",
+			Help: `Optional alternative URL for upload API calls.
+
+If set, upload chunk requests will be sent to this host instead of
+the main api_host. Useful for load-balancing or directing upload
+traffic to a different server or CDN endpoint.
+`,
+			Name:      "upload_host",
 			Sensitive: true,
 		}, {
-			Name:     "upload_concurrency",
-			Default:  4,
-			Help:     "Upload Concurrency",
+			Name:    "encrypt_files",
+			Default: false,
+			Help: `Enable native TelDrive encryption for stored files.
+
+When enabled, files will be encrypted at rest using TelDrive's
+built-in encryption before being sent to Telegram. The encryption
+keys are managed by the TelDrive server.
+`,
+		}, {
+			Name:    "hash_enabled",
+			Default: true,
+			Help: `Enable BLAKE3 tree hashing for file integrity verification.
+
+Files are split into 16 MiB blocks, each hashed with BLAKE3, then
+the block hashes are combined into a final tree hash. This allows
+rclone to verify upload integrity and detect modifications.
+
+Disable only if the server does not support this hash type.
+`,
+		}, {
+			Name:     config.ConfigEncoding,
+			Help:     config.ConfigEncodingHelp,
 			Advanced: true,
-		},
-			{
-				Name:     "threaded_streams",
-				Default:  false,
-				Help:     "Thread Streams",
-				Advanced: true,
-			},
-			{
-				Help:      "Upload Api Host",
-				Name:      "upload_host",
-				Sensitive: true,
-			},
-			{
-				Name:    "encrypt_files",
-				Default: false,
-				Help:    "Enable Native Teldrive Encryption",
-			},
-			{
-				Name:    "hash_enabled",
-				Default: true,
-				Help:    "Enable Blake3 Tree Hashing",
-			},
-			{
-				Name:     config.ConfigEncoding,
-				Help:     config.ConfigEncodingHelp,
-				Advanced: true,
-				Default:  encoder.Standard | encoder.EncodeInvalidUtf8,
-			}},
+			Default:  encoder.Standard | encoder.EncodeBackSlash | encoder.EncodeLeftSpace | encoder.EncodeRightSpace | encoder.EncodeInvalidUtf8,
+		}},
 	})
 
 	telDriveHash = hash.RegisterHash("teldrive", "TelDriveHash", tdhash.Size, tdhash.New)
 }
 
-// Options defines the configuration for this backend
+// Options defines the configuration for this backend.
+// These are set via the rclone config file, command-line flags, or
+// environment variables prefixed with RCLONE_TELDRIVE_.
 type Options struct {
-	ApiHost           string               `config:"api_host"`
-	UploadHost        string               `config:"upload_host"`
-	AccessToken       string               `config:"access_token"`
-	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`
-	RootFolderID      string               `config:"root_folder_id"`
-	RandomChunkName   bool                 `config:"random_chunk_name"`
-	UploadConcurrency int                  `config:"upload_concurrency"`
-	ChannelID         int64                `config:"channel_id"`
-	EncryptFiles      bool                 `config:"encrypt_files"`
-	PageSize          int64                `config:"page_size"`
-	HashEnabled       bool                 `config:"hash_enabled"`
-	Enc               encoder.MultiEncoder `config:"encoding"`
+	ApiHost           string               `config:"api_host"`           // URL of the TelDrive API server
+	UploadHost        string               `config:"upload_host"`        // Optional alternative host for uploads
+	APIKey            string               `config:"api_key"`            // API authentication token
+	LinkPassword      string               `config:"link_password"`      // Password for public share links
+	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`         // Upload chunk size (auto-aligned to 16 MiB)
+	UploadConcurrency int                  `config:"upload_concurrency"` // Parallel upload streams per file
+	EncryptFiles      bool                 `config:"encrypt_files"`      // Enable server-side encryption
+	PageSize          int64                `config:"page_size"`          // Directory listing page size
+	HashEnabled       bool                 `config:"hash_enabled"`       // Enable BLAKE3 tree hashing
+	Enc               encoder.MultiEncoder `config:"encoding"`           // Filename encoding rules
 }
 
-// Fs is the interface a cloud storage system must provide
+// Fs represents a remote TelDrive file system.
+// It manages the connection to the TelDrive API, directory cache,
+// rate-limiting pacers, and per-remote configuration.
 type Fs struct {
-	root         string
-	name         string
-	opt          Options
-	features     *fs.Features
-	srv          *rest.Client
-	pacer        *fs.Pacer
-	ssePacer     *fs.Pacer // Dedicated pacer for SSE connection retries
-	userId       int64
-	dirCache     *dircache.DirCache
-	rootFolderID string
+	root     string             // Root path on this remote
+	name     string             // Name of this remote in the config
+	opt      Options            // Backend configuration
+	features *fs.Features       // Optional feature flags for this backend
+	srv      *rest.Client       // HTTP client for API calls
+	pacer    *fs.Pacer          // Rate limiter for API requests
+	ssePacer *fs.Pacer          // Dedicated pacer for SSE connection retries
+	userId   int64              // Authenticated user ID from session
+	dirCache *dircache.DirCache // Cached directory tree for fast path resolution
 }
 
 // Object represents an teldrive object
@@ -152,6 +217,53 @@ type Object struct {
 	modTime  time.Time
 	mimeType string
 	hash     string // BLAKE3 tree hash from server
+}
+
+type apiError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *apiError) Error() string {
+	if e == nil {
+		return "TelDrive API error"
+	}
+	if e.Code != "" && e.Message != "" {
+		return fmt.Sprintf("TelDrive API error %d (%s): %s", e.StatusCode, e.Code, e.Message)
+	}
+	if e.Message != "" {
+		return fmt.Sprintf("TelDrive API error %d: %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("TelDrive API error %d", e.StatusCode)
+}
+
+func (e *apiError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	switch e.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return fs.ErrorPermissionDenied
+	case http.StatusNotFound:
+		return fs.ErrorObjectNotFound
+	case http.StatusPreconditionFailed:
+		return fs.ErrorImmutableModified
+	default:
+		return nil
+	}
+}
+
+func errorHandler(resp *http.Response) error {
+	envelope := new(api.ErrorEnvelope)
+	if err := rest.DecodeJSON(resp, envelope); err != nil {
+		return &apiError{StatusCode: resp.StatusCode, Message: resp.Status}
+	}
+	return &apiError{
+		StatusCode: resp.StatusCode,
+		Code:       envelope.Error.Code,
+		Message:    envelope.Error.Message,
+	}
 }
 
 // Name of the remote (as passed into NewFs)
@@ -242,16 +354,10 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 
 	// Align chunk size to 16MB multiple for optimal BLAKE3 tree hashing
 	opt.ChunkSize = alignChunkSize(opt.ChunkSize)
-
-	if opt.ChannelID < 0 {
-		channelIDStr := strconv.FormatInt(opt.ChannelID, 10)
-		// teldrive API expects channel ID without the -100 prefix for supergroups/channels
-		trimmedIDStr := strings.TrimPrefix(channelIDStr, "-100")
-		newID, err := strconv.ParseInt(trimmedIDStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid channel_id: %w", err)
-		}
-		opt.ChannelID = newID
+	if opt.PageSize < 1 {
+		opt.PageSize = 100
+	} else if opt.PageSize > 200 {
+		opt.PageSize = 200
 	}
 
 	f := &Fs{
@@ -272,20 +378,26 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 	f.features = (&fs.Features{
 		CanHaveEmptyDirectories: true,
 		ReadMimeType:            true,
+		WriteMimeType:           true,
 		ChunkWriterDoesntSeek:   true,
 	}).Fill(ctx, f)
 
 	client := fshttp.NewClient(ctx)
-	authCookie := http.Cookie{Name: authCookieName, Value: opt.AccessToken}
-	f.srv = rest.NewClient(client).SetRoot(strings.Trim(opt.ApiHost, "/")).SetCookie(&authCookie)
+	f.srv = rest.NewClient(client).
+		SetRoot(strings.Trim(opt.ApiHost, "/")).
+		SetErrorHandler(errorHandler)
+	if opt.APIKey == "" {
+		return nil, errors.New("missing api_key")
+	}
+	f.srv.SetHeader(apiKeyHeaderName, opt.APIKey)
 
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/api/auth/session",
+		Path:   "/api/v1/me",
 	}
 
 	var (
-		session     api.Session
+		session     api.UserProfile
 		sessionResp *http.Response
 	)
 
@@ -301,30 +413,15 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		return nil, errors.New("invalid session")
 	}
 
-	for _, cookie := range sessionResp.Cookies() {
-		if (cookie.Name == authCookieName) && (cookie.Value != "") {
-			config.Set(authCookieName, cookie.Value)
-		}
-	}
-
 	f.userId = session.UserId
 
-	if f.opt.RootFolderID != "" {
-		f.rootFolderID = f.opt.RootFolderID
-	} else {
-		f.rootFolderID, err = f.getRootID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		config.Set("root_folder_id", f.rootFolderID)
-	}
-	f.dirCache = dircache.New(f.root, f.rootFolderID, f)
+	f.dirCache = dircache.New(f.root, rootID, f)
 	err = f.dirCache.FindRoot(ctx, false)
 	if err != nil {
 		// Assume it is a file
 		newRoot, remote := dircache.SplitPath(root)
 		tempF := *f
-		tempF.dirCache = dircache.New(newRoot, f.rootFolderID, &tempF)
+		tempF.dirCache = dircache.New(newRoot, rootID, &tempF)
 		tempF.root = newRoot
 		err = tempF.dirCache.FindRoot(ctx, false)
 		if err != nil {
@@ -352,26 +449,26 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 }
 
 func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.MetadataRequestOptions) (*api.ReadMetadataResponse, error) {
-
 	directoryID, err := f.dirCache.FindDir(ctx, path, false)
-
 	if err != nil {
 		return nil, err
 	}
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/api/files",
+		Path:   "/api/v1/files",
 		Parameters: url.Values{
-			"parentId":  []string{directoryID},
-			"limit":     []string{strconv.FormatInt(options.Limit, 10)},
-			"sort":      []string{"id"},
-			"operation": []string{"list"},
-			"page":      []string{strconv.FormatInt(options.Page, 10)},
+			"limit": []string{strconv.FormatInt(options.Limit, 10)},
 		},
+	}
+	setParentParameter(opts.Parameters, directoryID)
+	if options.Cursor != "" {
+		opts.Parameters.Set("cursor", options.Cursor)
+	}
+	if options.Status != "" {
+		opts.Parameters.Set("status", options.Status)
 	}
 	var info api.ReadMetadataResponse
 	var resp *http.Response
-
 	err = f.pacer.Call(func() (bool, error) {
 		resp, err = f.srv.CallJSON(ctx, &opts, nil, &info)
 		return shouldRetry(ctx, resp, err)
@@ -382,58 +479,51 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string, options *api.
 	return &info, nil
 }
 
-func (f *Fs) getRootID(ctx context.Context) (string, error) {
-	opts := rest.Opts{
-		Method: "GET",
-		Path:   "/api/files",
-		Parameters: url.Values{
-			"parentId":  []string{"nil"},
-			"operation": []string{"find"},
-			"name":      []string{"root"},
-			"type":      []string{"folder"},
-		},
+func (f *Fs) getFileShares(ctx context.Context, id string) ([]api.FileShare, error) {
+	cursor := ""
+	var shares []api.FileShare
+	for {
+		parameters := url.Values{"limit": []string{"200"}}
+		if cursor != "" {
+			parameters.Set("cursor", cursor)
+		}
+		opts := rest.Opts{
+			Method: "GET", Path: "/api/v1/files/" + id + "/shares", Parameters: parameters,
+		}
+		var page api.FileSharePage
+		var resp *http.Response
+		err := f.pacer.Call(func() (bool, error) {
+			var callErr error
+			resp, callErr = f.srv.CallJSON(ctx, &opts, nil, &page)
+			return shouldRetry(ctx, resp, callErr)
+		})
+		if err != nil {
+			if resp != nil && resp.StatusCode == http.StatusNotFound {
+				return nil, fs.ErrorObjectNotFound
+			}
+			return nil, err
+		}
+		shares = append(shares, page.Items...)
+		if page.NextCursor == "" {
+			return shares, nil
+		}
+		cursor = page.NextCursor
 	}
-	var err error
-	var info api.ReadMetadataResponse
-	var resp *http.Response
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, nil, &info)
-		return shouldRetry(ctx, resp, err)
-	})
-
-	if err != nil {
-		return "", err
-	}
-	if len(info.Files) == 0 {
-		return "", fmt.Errorf("couldn't find root directory ID: %w", err)
-	}
-	return info.Files[0].Id, nil
 }
 
 func (f *Fs) getFileShare(ctx context.Context, id string) (*api.FileShare, error) {
-	opts := rest.Opts{
-		Method: "GET",
-		Path:   "/api/files/" + id + "/share",
-	}
-	res := api.FileShare{}
-	var (
-		resp *http.Response
-		err  error
-	)
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err = f.srv.CallJSON(ctx, &opts, nil, &res)
-		return shouldRetry(ctx, resp, err)
-	})
+	res, err := f.getFileShares(ctx, id)
 	if err != nil {
-		if resp.StatusCode == http.StatusNotFound {
-			return nil, fs.ErrorObjectNotFound
-		}
 		return nil, err
 	}
-	if res.ExpiresAt != nil && res.ExpiresAt.UTC().Before(time.Now().UTC()) {
-		return nil, fs.ErrorObjectNotFound
+	now := time.Now().UTC()
+	for i := range res {
+		if res[i].ExpiresAt != nil && res[i].ExpiresAt.UTC().Before(now) {
+			continue
+		}
+		return &res[i], nil
 	}
-	return &res, nil
+	return nil, fs.ErrorObjectNotFound
 }
 
 // List the objects and directories in dir into entries.  The
@@ -445,68 +535,48 @@ func (f *Fs) getFileShare(ctx context.Context, id string) (*api.FileShare, error
 //
 // This should return ErrDirNotFound if the directory isn't
 // found.
-func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
+func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
+	return list.WithListP(ctx, dir, f)
+}
 
-	opts := &api.MetadataRequestOptions{
-		Limit: f.opt.PageSize,
-		Page:  1,
-	}
-
-	files := []api.FileInfo{}
-
-	info, err := f.readMetaDataForPath(ctx, dir, opts)
-
-	if err != nil {
-		return nil, err
-	}
-
-	files = append(files, info.Files...)
-	mu := sync.Mutex{}
-	if info.Meta.TotalPages > 1 {
-		g, _ := errgroup.WithContext(ctx)
-
-		g.SetLimit(8)
-
-		for i := 2; i <= info.Meta.TotalPages; i++ {
-			page := i
-			g.Go(func() error {
-				opts := &api.MetadataRequestOptions{
-					Limit: f.opt.PageSize,
-					Page:  int64(page),
-				}
-				info, err := f.readMetaDataForPath(ctx, dir, opts)
-				if err != nil {
-					return err
-				}
-				mu.Lock()
-				files = append(files, info.Files...)
-				mu.Unlock()
-				return nil
-			})
-		}
-		if err := g.Wait(); err != nil {
-			return nil, err
-		}
-	}
-
-	for _, item := range files {
-		remote := path.Join(dir, f.opt.Enc.ToStandardName(item.Name))
-		if item.Type == "folder" {
-			f.dirCache.Put(remote, item.Id)
-			d := fs.NewDir(remote, item.ModTime).SetID(item.Id).SetParentID(item.ParentId).
-				SetSize(item.Size)
-			entries = append(entries, d)
-		}
-		if item.Type == "file" {
-			o, err := f.newObjectWithInfo(ctx, remote, &item)
-			if err != nil {
-				continue
+// ListP lists one directory and invokes callback once per API page.
+func (f *Fs) ListP(ctx context.Context, dir string, callback fs.ListRCallback) error {
+	opts := &api.MetadataRequestOptions{Limit: f.opt.PageSize}
+	for {
+		info, err := f.readMetaDataForPath(ctx, dir, opts)
+		if err != nil {
+			if errors.Is(err, fs.ErrorObjectNotFound) {
+				return fs.ErrorDirNotFound
 			}
-			entries = append(entries, o)
+			return err
 		}
-
+		entries := make(fs.DirEntries, 0, len(info.Files))
+		for _, item := range info.Files {
+			remote := path.Join(dir, f.opt.Enc.ToStandardName(item.Name))
+			switch item.Kind {
+			case "folder":
+				f.dirCache.Put(remote, item.Id)
+				entries = append(entries, fs.NewDir(remote, item.ModTime).
+					SetID(item.Id).
+					SetParentID(parentIDOrRoot(item.ParentId)).
+					SetSize(item.Size))
+			case "file":
+				o, err := f.newObjectWithInfo(ctx, remote, &item)
+				if err == nil {
+					entries = append(entries, o)
+				}
+			}
+		}
+		if len(entries) > 0 {
+			if err := callback(entries); err != nil {
+				return err
+			}
+		}
+		if info.NextCursor == "" {
+			return nil
+		}
+		opts.Cursor = info.NextCursor
 	}
-	return entries, nil
 }
 
 // Return an Object from a path
@@ -521,13 +591,13 @@ func (f *Fs) newObjectWithInfo(_ context.Context, remote string, info *api.FileI
 		remote:   remote,
 		id:       info.Id,
 		size:     info.Size,
-		parentId: info.ParentId,
+		parentId: parentIDOrRoot(info.ParentId),
 		name:     info.Name,
 		modTime:  info.ModTime,
 		mimeType: info.MimeType,
-		hash:     info.Hash,
+		hash:     fileHashValue(info.Hash),
 	}
-	if info.Type == "folder" {
+	if info.Kind == "folder" {
 		return o, fs.ErrorIsDir
 	}
 	return o, nil
@@ -544,10 +614,13 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	}
 
 	res, err := f.findObject(ctx, directoryID, leaf)
-	if err != nil || len(res) == 0 {
+	if err != nil {
+		return nil, err
+	}
+	if len(res) == 0 {
 		return nil, fs.ErrorObjectNotFound
 	}
-	if res[0].Type == "folder" {
+	if res[0].Kind == "folder" {
 		return nil, fs.ErrorIsDir
 	}
 
@@ -555,104 +628,120 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 }
 
 func (f *Fs) findObject(ctx context.Context, pathID, leaf string) ([]api.FileInfo, error) {
-	opts := rest.Opts{
-		Method: "GET",
-		Path:   "/api/files",
-		Parameters: url.Values{
-			"parentId":  []string{pathID},
-			"operation": []string{"find"},
-			"name":      []string{leaf},
-			"sort":      []string{"id"},
-			"order":     []string{"desc"},
-			"limit":     []string{"1"},
-		},
+	encodedLeaf := f.opt.Enc.FromStandardName(leaf)
+	cursor := ""
+	for {
+		opts := rest.Opts{
+			Method:     "GET",
+			Path:       "/api/v1/files",
+			Parameters: url.Values{"limit": []string{"200"}},
+		}
+		setParentParameter(opts.Parameters, pathID)
+		if cursor != "" {
+			opts.Parameters.Set("cursor", cursor)
+		}
+		var page api.ReadMetadataResponse
+		var resp *http.Response
+		err := f.pacer.Call(func() (bool, error) {
+			var callErr error
+			resp, callErr = f.srv.CallJSON(ctx, &opts, nil, &page)
+			return shouldRetry(ctx, resp, callErr)
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range page.Files {
+			if file.Name == encodedLeaf {
+				return []api.FileInfo{file}, nil
+			}
+		}
+		if page.NextCursor == "" {
+			return nil, nil
+		}
+		cursor = page.NextCursor
 	}
-	var info api.ReadMetadataResponse
-	err := f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, nil, &info)
-		return shouldRetry(ctx, resp, err)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return info.Files, nil
 }
 
 func (f *Fs) moveTo(ctx context.Context, id, srcLeaf, dstLeaf, srcDirectoryID, dstDirectoryID string) error {
-
-	if srcDirectoryID != dstDirectoryID {
-		opts := rest.Opts{
-			Method:     "POST",
-			Path:       "/api/files/move",
-			NoResponse: true,
+	if srcDirectoryID == dstDirectoryID {
+		if srcLeaf == dstLeaf {
+			return nil
 		}
-		mv := api.MoveFileRequest{
-			Destination:     dstDirectoryID,
-			Files:           []string{id},
-			DestinationLeaf: dstLeaf,
+		if err := f.updateFileInformation(ctx, &api.UpdateFileInformation{Name: f.opt.Enc.FromStandardName(dstLeaf)}, id); err != nil {
+			return fmt.Errorf("move: failed rename: %w", err)
 		}
-		err := f.pacer.Call(func() (bool, error) {
-			resp, err := f.srv.CallJSON(ctx, &opts, &mv, nil)
-			return shouldRetry(ctx, resp, err)
-		})
-		if err != nil {
-			return fmt.Errorf("couldn't move file: %w", err)
-		}
-	} else {
-		if srcLeaf != dstLeaf {
-			err := f.updateFileInformation(ctx, &api.UpdateFileInformation{Name: dstLeaf}, id)
-			if err != nil {
-				return fmt.Errorf("move: failed rename: %w", err)
-			}
-		}
+		return nil
+	}
+	if srcLeaf == dstLeaf {
+		return f.moveFileToParent(ctx, id, dstDirectoryID)
 	}
 
+	// Moving and renaming are separate v2 operations. If the source name is
+	// already occupied in the destination, rename before moving; otherwise move
+	// first. Roll back the first operation if the second fails.
+	collisions, err := f.findObject(ctx, dstDirectoryID, srcLeaf)
+	if err != nil {
+		return err
+	}
+	encodedSrc := f.opt.Enc.FromStandardName(srcLeaf)
+	encodedDst := f.opt.Enc.FromStandardName(dstLeaf)
+	if len(collisions) > 0 {
+		if err := f.updateFileInformation(ctx, &api.UpdateFileInformation{Name: encodedDst}, id); err != nil {
+			return fmt.Errorf("move: failed pre-rename: %w", err)
+		}
+		if err := f.moveFileToParent(ctx, id, dstDirectoryID); err != nil {
+			rollbackErr := f.updateFileInformation(context.Background(), &api.UpdateFileInformation{Name: encodedSrc}, id)
+			return errors.Join(fmt.Errorf("couldn't move file: %w", err), rollbackErr)
+		}
+		return nil
+	}
+	if err := f.moveFileToParent(ctx, id, dstDirectoryID); err != nil {
+		return fmt.Errorf("couldn't move file: %w", err)
+	}
+	if err := f.updateFileInformation(ctx, &api.UpdateFileInformation{Name: encodedDst}, id); err != nil {
+		rollbackErr := f.moveFileToParent(context.Background(), id, srcDirectoryID)
+		return errors.Join(fmt.Errorf("move: failed rename: %w", err), rollbackErr)
+	}
 	return nil
 }
 
-// updateFileInformation set's various file attributes most importantly it's name
-func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileInformation, fileId string) (err error) {
+func (f *Fs) moveFileToParent(ctx context.Context, id, destinationID string) error {
 	opts := rest.Opts{
-		Method:     "PATCH",
-		Path:       "/api/files/" + fileId,
-		NoResponse: true,
+		Method:       "POST",
+		Path:         "/api/v1/files/" + id + "/move",
+		ExtraHeaders: map[string]string{"Idempotency-Key": uuid.NewString()},
 	}
-
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, update, nil)
+	move := api.MoveFileRequest{ParentId: requestParentID(destinationID), ConflictPolicy: "fail"}
+	return f.pacer.Call(func() (bool, error) {
+		resp, err := f.srv.CallJSON(ctx, &opts, &move, nil)
 		return shouldRetry(ctx, resp, err)
 	})
-	if err != nil {
-		return fmt.Errorf("couldn't update file info: %w", err)
-	}
-	return err
 }
 
-func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, _ ...fs.OpenOption) error {
-	o := &Object{
-		fs: f,
+// updateFileInformation set's various file attributes most importantly it's name
+func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileInformation, fileID string) error {
+	opts := rest.Opts{Method: "PATCH", Path: "/api/v1/files/" + fileID, NoResponse: true}
+	if err := f.pacer.Call(func() (bool, error) {
+		resp, err := f.srv.CallJSON(ctx, &opts, update, nil)
+		return shouldRetry(ctx, resp, err)
+	}); err != nil {
+		return fmt.Errorf("couldn't update file info: %w", err)
 	}
+	return nil
+}
 
-	var uploadInfo *uploadInfo
-	var err error
-	size := src.Size()
-
-	if size < 0 {
-		// Unknown size - buffer to memory/temp file first
-		fs.Debugf(f, "putUnchecked: unknown size, buffering to memory (threshold: %d bytes)", memoryBufferThreshold)
-		uploadInfo, size, err = o.uploadWithBuffering(ctx, in, src)
-		if err != nil {
-			return err
-		}
-		// Create new src with known size for createFile
-		src = object.NewStaticObjectInfo(src.Remote(), src.ModTime(ctx), size, false, nil, f)
-	} else if size > 0 {
-		uploadInfo, err = o.uploadMultipart(ctx, in, src)
-		if err != nil {
-			return err
-		}
+func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
+	if src.Size() < 0 {
+		_, err := multipart.UploadMultipart(ctx, src, in, multipart.UploadMultipartOptions{
+			Open: f, OpenOptions: options,
+		})
+		return err
 	}
-
+	o := &Object{fs: f}
+	uploadInfo, err := o.uploadMultipart(ctx, src.Remote(), in, src)
+	if err != nil {
+		return err
+	}
 	return o.createFile(ctx, src, uploadInfo)
 }
 
@@ -665,7 +754,7 @@ func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (pathIDOut strin
 	if len(files) == 0 {
 		return "", false, nil
 	}
-	if files[0].Type == "file" {
+	if files[0].Kind == "file" {
 		return "", false, fs.ErrorIsFile
 	}
 	return files[0].Id, true, nil
@@ -711,90 +800,97 @@ func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, 
 //
 // The new object may have been created if an error is returned
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
-	remote := o.Remote()
-	modTime := src.ModTime(ctx)
-
-	leaf, directoryID, err := o.fs.dirCache.FindPath(ctx, remote, true)
+	if src.Size() < 0 {
+		_, err := multipart.UploadMultipart(ctx, src, in, multipart.UploadMultipartOptions{
+			Open: o.fs, OpenOptions: options,
+		})
+		if err != nil {
+			return err
+		}
+		updated, err := o.fs.NewObject(ctx, o.Remote())
+		if err != nil {
+			return err
+		}
+		*o = *(updated.(*Object))
+		return nil
+	}
+	info, err := o.uploadMultipart(ctx, o.Remote(), in, src)
 	if err != nil {
 		return err
 	}
-
-	var uploadInfo *uploadInfo
-	size := src.Size()
-
-	if size < 0 {
-		// Unknown size - buffer to memory/temp file first
-		fs.Debugf(o, "Update: unknown size, buffering to memory (threshold: %d bytes)", memoryBufferThreshold)
-		uploadInfo, size, err = o.uploadWithBuffering(ctx, in, src)
-		if err != nil {
-			return err
-		}
-	} else if size > 0 {
-		uploadInfo, err = o.uploadMultipart(ctx, in, src)
-		if err != nil {
-			return err
-		}
-	}
-
-	payload := &api.UpdateFileInformation{
-		ModTime:  Ptr(modTime.UTC()),
-		Size:     size,
-		ParentID: directoryID,
-		Name:     leaf,
-	}
-
-	if uploadInfo != nil {
-		payload.UploadId = uploadInfo.uploadID
-		payload.ChannelID = uploadInfo.channelID
-		payload.Encrypted = uploadInfo.encryptFile
-	}
-
-	opts := rest.Opts{
-		Method:     "PATCH",
-		Path:       "/api/files/" + o.id,
-		NoResponse: true,
-	}
-
-	err = o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, payload, nil)
-		return shouldRetry(ctx, resp, err)
-	})
-
+	file, err := o.completeUpload(ctx, info)
 	if err != nil {
-		return fmt.Errorf("failed to update file information: %w", err)
+		return err
 	}
-
-	o.modTime = modTime
-	o.size = size
-
+	o.applyFileInfo(file)
 	return nil
 }
 
 // ChangeNotify calls the passed function with a path that has had changes.
 func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryType), pollIntervalChan <-chan time.Duration) {
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case pollInterval, ok := <-pollIntervalChan:
-				if !ok {
-					fs.Debugf(f, "ChangeNotify: channel closed, stopping")
-					return
-				}
-				if pollInterval > 0 {
-					fs.Debugf(f, "ChangeNotify: poll interval set but SSE is active, ignoring")
-				}
-			default:
-				fs.Debugf(f, "Starting SSE event stream")
-				err := f.changeNotifySSE(ctx, notifyFunc)
-				if err != nil {
-					fs.Infof(f, "SSE connection failed permanently: %s", err)
-					return
-				}
-			}
+	go f.changeNotifyLoop(ctx, notifyFunc, pollIntervalChan, f.changeNotifySSE)
+}
+
+type changeNotifySSEFunc func(context.Context, func(string, fs.EntryType)) error
+
+func (f *Fs) changeNotifyLoop(ctx context.Context, notifyFunc func(string, fs.EntryType), pollIntervalChan <-chan time.Duration, runSSE changeNotifySSEFunc) {
+	var (
+		enabled   bool
+		sseCancel context.CancelFunc
+		sseDone   <-chan error
+	)
+
+	startSSE := func() {
+		if sseDone != nil {
+			return
 		}
-	}()
+		sseCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		sseCancel = cancel
+		sseDone = done
+		fs.Debugf(f, "Starting SSE event stream")
+		go func() {
+			done <- runSSE(sseCtx, notifyFunc)
+		}()
+	}
+	stopSSE := func() {
+		if sseCancel != nil {
+			sseCancel()
+		}
+	}
+	defer stopSSE()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case pollInterval, ok := <-pollIntervalChan:
+			if !ok {
+				fs.Debugf(f, "ChangeNotify: channel closed, stopping")
+				return
+			}
+			enabled = pollInterval > 0
+			if enabled {
+				startSSE()
+			} else {
+				stopSSE()
+			}
+		case err := <-sseDone:
+			sseDone = nil
+			sseCancel = nil
+			if ctx.Err() != nil {
+				return
+			}
+			if !enabled {
+				continue
+			}
+			if err != nil && !errors.Is(err, context.Canceled) {
+				fs.Infof(f, "SSE connection failed permanently: %s", err)
+				return
+			}
+			startSSE()
+		}
+	}
 }
 
 func isFatalError(err error) bool {
@@ -808,6 +904,7 @@ func isFatalError(err error) bool {
 }
 
 func (f *Fs) changeNotifySSE(ctx context.Context, notifyFunc func(string, fs.EntryType)) error {
+	lastEventID := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -817,7 +914,7 @@ func (f *Fs) changeNotifySSE(ctx context.Context, notifyFunc func(string, fs.Ent
 
 		var connErr error
 		err := f.ssePacer.Call(func() (bool, error) {
-			connErr = f.connectAndProcessSSE(ctx, notifyFunc)
+			connErr = f.connectAndProcessSSE(ctx, notifyFunc, &lastEventID)
 			if connErr == nil {
 				return false, nil
 			}
@@ -838,17 +935,23 @@ func (f *Fs) changeNotifySSE(ctx context.Context, notifyFunc func(string, fs.Ent
 	}
 }
 
-func (f *Fs) connectAndProcessSSE(ctx context.Context, notifyFunc func(string, fs.EntryType)) error {
+func (f *Fs) connectAndProcessSSE(ctx context.Context, notifyFunc func(string, fs.EntryType), lastEventID *string) error {
+	headers := map[string]string{
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+	if lastEventID != nil && *lastEventID != "" {
+		headers["Last-Event-ID"] = *lastEventID
+	}
 	opts := rest.Opts{
-		Method:      "GET",
-		Path:        "/api/events/stream",
-		ContentType: "text/event-stream",
-		ExtraHeaders: map[string]string{
-			"Accept":        "text/event-stream",
-			"Cache-Control": "no-cache",
+		Method:       "GET",
+		Path:         "/api/v1/events",
+		ContentType:  "text/event-stream",
+		ExtraHeaders: headers,
+		Parameters: url.Values{
+			"types": []string{"file.created,file.updated,file.trashed,file.restored,file.purged"},
 		},
 	}
-
 	resp, err := f.srv.Call(ctx, &opts)
 	if err != nil {
 		return fmt.Errorf("failed to connect to SSE endpoint: %w", err)
@@ -857,24 +960,20 @@ func (f *Fs) connectAndProcessSSE(ctx context.Context, notifyFunc func(string, f
 		return fmt.Errorf("no response from SSE endpoint")
 	}
 	defer resp.Body.Close()
-
-	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(contentType, "text/event-stream") {
+	if contentType := resp.Header.Get("Content-Type"); !strings.Contains(contentType, "text/event-stream") {
 		return fmt.Errorf("unexpected content type: %s", contentType)
 	}
-
 	fs.Debugf(f, "SSE connection established")
 	reader := bufio.NewReader(resp.Body)
+	var eventID string
+	var eventName string
 	var eventData strings.Builder
-
 	for {
-
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
 		}
-
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
@@ -882,71 +981,67 @@ func (f *Fs) connectAndProcessSSE(ctx context.Context, notifyFunc func(string, f
 			}
 			return fmt.Errorf("error reading SSE stream: %w", err)
 		}
-
 		line = strings.TrimRight(line, "\r\n")
-
 		if line == "" {
 			if eventData.Len() > 0 {
 				data := eventData.String()
 				eventData.Reset()
-
-				if err := f.processSSEEvent(data, notifyFunc); err != nil {
+				if err := f.processSSEEvent(eventName, data, notifyFunc); err != nil {
 					fs.Debugf(f, "Failed to process SSE event: %s", err)
+				} else if eventID != "" && lastEventID != nil {
+					*lastEventID = eventID
 				}
 			}
+			eventID = ""
+			eventName = ""
 			continue
 		}
-
-		if strings.HasPrefix(line, "data: ") {
-			eventData.WriteString(line[6:])
+		if after, ok := strings.CutPrefix(line, "id:"); ok {
+			eventID = strings.TrimSpace(after)
+			continue
+		}
+		if after, ok := strings.CutPrefix(line, "event:"); ok {
+			eventName = strings.TrimSpace(after)
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			if eventData.Len() > 0 {
+				eventData.WriteByte('\n')
+			}
+			eventData.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
 }
 
-func (f *Fs) processSSEEvent(data string, notifyFunc func(string, fs.EntryType)) error {
-	var event api.Event
+func (f *Fs) processSSEEvent(eventName, data string, notifyFunc func(string, fs.EntryType)) error {
+	if eventName == "sync.required" {
+		f.dirCache.ResetRoot()
+		notifyFunc("", fs.EntryDirectory)
+		return nil
+	}
+	if eventName == "" || eventName == "stream.error" {
+		return nil
+	}
+	var event api.EventEnvelope
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return fmt.Errorf("failed to unmarshal event: %w", err)
 	}
-
-	// Get parent path from cache
-	parentPath, ok := f.dirCache.GetInv(event.Source.ParentId)
+	if event.ResourceType != "file" || event.Payload.Name == "" {
+		return nil
+	}
+	parentID := parentIDOrRoot(event.Payload.ParentId)
+	parentPath, ok := f.dirCache.GetInv(parentID)
 	if !ok {
-		fs.Debugf(f, "SSE: skipping event for uncached parent %s", event.Source.ParentId)
 		return nil
 	}
-
-	fullPath := path.Join(parentPath, event.Source.Name)
-
-	// Filter: only notify for paths within root
-	if !strings.HasPrefix(fullPath, f.root) {
-		return nil
-	}
-
-	var entryType fs.EntryType
-	switch event.Source.Type {
-	case "folder":
+	name := f.opt.Enc.ToStandardName(event.Payload.Name)
+	fullPath := path.Join(parentPath, name)
+	entryType := fs.EntryObject
+	if event.Payload.Kind == "folder" {
 		entryType = fs.EntryDirectory
-	case "file":
-		entryType = fs.EntryObject
-	default:
-		entryType = fs.EntryObject
 	}
-
-	// Handle move events - notify both old and new locations
-	if event.Type == "file_move" && event.Source.DestParentId != "" {
-		if oldParentPath, ok := f.dirCache.GetInv(event.Source.DestParentId); ok {
-			oldPath := path.Join(oldParentPath, event.Source.Name)
-			if strings.HasPrefix(oldPath, f.root) {
-				fs.Debugf(f, "SSE move event: old path %s", oldPath)
-				notifyFunc(oldPath, entryType)
-			}
-		}
-	}
-
-	fs.Debugf(f, "SSE event: %s (%v, type=%s)", fullPath, entryType, event.Type)
+	fs.Debugf(f, "SSE event: %s (%v, type=%s)", fullPath, entryType, eventName)
 	notifyFunc(fullPath, entryType)
-
 	return nil
 }
 
@@ -964,59 +1059,30 @@ func (f *Fs) OpenChunkWriter(
 	remote string,
 	src fs.ObjectInfo,
 	options ...fs.OpenOption) (info fs.ChunkWriterInfo, writer fs.ChunkWriter, err error) {
-
-	o := &Object{
-		fs:     f,
-		remote: remote,
-	}
-
-	// If size is unknown, use bufferingChunkWriter that supports out-of-order chunks
-	if src.Size() <= 0 {
-		fs.Debugf(f, "OpenChunkWriter: unknown size, using buffering chunk writer")
-		return fs.ChunkWriterInfo{}, &bufferingChunkWriter{
-			f:      f,
-			o:      o,
-			src:    src,
-			remote: remote,
-			chunks: make(map[int]*chunkFile),
-		}, nil
-	}
-
-	uploadInfo, err := o.prepareUpload(ctx, src)
-
+	o := &Object{fs: f, remote: remote}
+	uploadInfo, err := o.prepareUpload(ctx, remote, src)
 	if err != nil {
-		return info, nil, fmt.Errorf("failed to prepare upload: %w", err)
+		return info, nil, fmt.Errorf("prepare upload: %w", err)
 	}
-
-	chunkWriter := &objectChunkWriter{
-		size:       src.Size(),
-		f:          f,
-		src:        src,
-		o:          o,
-		uploadInfo: uploadInfo,
-	}
-	info = fs.ChunkWriterInfo{
+	return fs.ChunkWriterInfo{
 		ChunkSize:         uploadInfo.chunkSize,
-		Concurrency:       o.fs.opt.UploadConcurrency,
-		LeavePartsOnError: true,
-	}
-	fs.Debugf(o, "open chunk writer: started upload: %v", uploadInfo.uploadID)
-	return info, chunkWriter, err
+		Concurrency:       f.opt.UploadConcurrency,
+		LeavePartsOnError: src.Size() >= 0,
+	}, &objectChunkWriter{o: o, uploadInfo: uploadInfo}, nil
 }
 
 // CreateDir makes a directory with pathID as parent and name leaf
-func (f *Fs) CreateDir(ctx context.Context, pathID, leaf string) (newID string, err error) {
+func (f *Fs) CreateDir(ctx context.Context, pathID, leaf string) (string, error) {
 	opts := rest.Opts{
-		Method: "POST",
-		Path:   "/api/files",
+		Method:       "POST",
+		Path:         "/api/v1/folders",
+		ExtraHeaders: map[string]string{"Idempotency-Key": uuid.NewString()},
 	}
-	mkdir := api.CreateFileRequest{
-		Name:     leaf,
-		Type:     "folder",
-		ParentId: pathID,
+	mkdir := api.FolderCreateRequest{
+		ParentId: requestParentID(pathID), Name: f.opt.Enc.FromStandardName(leaf), ConflictPolicy: "fail",
 	}
-	info := api.FileInfo{}
-	err = f.pacer.Call(func() (bool, error) {
+	var info api.FileInfo
+	err := f.pacer.Call(func() (bool, error) {
 		resp, err := f.srv.CallJSON(ctx, &opts, &mkdir, &info)
 		return shouldRetry(ctx, resp, err)
 	})
@@ -1043,12 +1109,8 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 	if err != nil {
 		return err
 	}
-
 	if check {
-		info, err := f.readMetaDataForPath(ctx, dir, &api.MetadataRequestOptions{
-			Limit: 1,
-			Page:  1,
-		})
+		info, err := f.readMetaDataForPath(ctx, dir, &api.MetadataRequestOptions{Limit: 1})
 		if err != nil {
 			return err
 		}
@@ -1056,20 +1118,11 @@ func (f *Fs) purgeCheck(ctx context.Context, dir string, check bool) error {
 			return fs.ErrorDirectoryNotEmpty
 		}
 	}
-
-	opts := rest.Opts{
-		Method:     "POST",
-		Path:       "/api/files/delete",
-		NoResponse: true,
-	}
-	rm := api.RemoveFileRequest{
-		Files: []string{directoryID},
-	}
-	err = f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, &rm, nil)
+	opts := rest.Opts{Method: "DELETE", Path: "/api/v1/files/" + directoryID, NoResponse: true}
+	if err := f.pacer.Call(func() (bool, error) {
+		resp, err := f.srv.Call(ctx, &opts)
 		return shouldRetry(ctx, resp, err)
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 	f.dirCache.FlushDir(dir)
@@ -1157,78 +1210,69 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 }
 
 func (o *Object) Remove(ctx context.Context) error {
-	opts := rest.Opts{
-		Method:     "POST",
-		Path:       "/api/files/delete",
-		NoResponse: true,
-	}
-	delete := api.RemoveFileRequest{
-		Files: []string{o.id},
-	}
-	err := o.fs.pacer.Call(func() (bool, error) {
-		resp, err := o.fs.srv.CallJSON(ctx, &opts, &delete, nil)
+	opts := rest.Opts{Method: "DELETE", Path: "/api/v1/files/" + o.id, NoResponse: true}
+	return o.fs.pacer.Call(func() (bool, error) {
+		resp, err := o.fs.srv.Call(ctx, &opts)
 		return shouldRetry(ctx, resp, err)
 	})
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // PublicLink adds a "readable by anyone with link" permission on the given file or folder.
-func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, unlink bool) (link string, err error) {
+func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, unlink bool) (string, error) {
 	id, err := f.dirCache.FindDir(ctx, remote, false)
-	if err == nil {
-		fs.Debugf(f, "attempting to share directory '%s'", remote)
-	} else {
-		fs.Debugf(f, "attempting to share single file '%s'", remote)
-		o, err := f.NewObject(ctx, remote)
-		if err != nil {
-			return "", err
+	if err != nil {
+		o, objectErr := f.NewObject(ctx, remote)
+		if objectErr != nil {
+			return "", objectErr
 		}
 		id = o.(fs.IDer).ID()
 	}
 	if unlink {
-		opts := rest.Opts{
-			Method:     "DELETE",
-			Path:       "/api/files/" + id + "/share",
-			NoResponse: true,
+		shares, err := f.getFileShares(ctx, id)
+		if err != nil {
+			if errors.Is(err, fs.ErrorObjectNotFound) {
+				return "", nil
+			}
+			return "", err
 		}
-		f.pacer.Call(func() (bool, error) {
-			resp, err := f.srv.Call(ctx, &opts)
-			return shouldRetry(ctx, resp, err)
-		})
+		for _, share := range shares {
+			if share.RevokedAt != nil {
+				continue
+			}
+			opts := rest.Opts{Method: "DELETE", Path: "/api/v1/shares/" + share.ID, NoResponse: true}
+			if err := f.pacer.Call(func() (bool, error) {
+				resp, callErr := f.srv.Call(ctx, &opts)
+				return shouldRetry(ctx, resp, callErr)
+			}); err != nil {
+				return "", err
+			}
+		}
 		return "", nil
 	}
-
-	share, err := f.getFileShare(ctx, id)
-	if err != nil {
-		if !errors.Is(err, fs.ErrorObjectNotFound) {
-			return "", err
-		}
-		opts := rest.Opts{
-			Method:     "POST",
-			Path:       "/api/files/" + id + "/share",
-			NoResponse: true,
-		}
-		payload := api.FileShare{}
-		if expire < fs.DurationOff {
-			dur := time.Now().Add(time.Duration(expire)).UTC()
-			payload.ExpiresAt = &dur
-		}
-		err = f.pacer.Call(func() (bool, error) {
-			resp, err := f.srv.CallJSON(ctx, &opts, &payload, nil)
-			return shouldRetry(ctx, resp, err)
-		})
-		if err != nil {
-			return "", err
-		}
-		share, err = f.getFileShare(ctx, id)
-		if err != nil {
-			return "", err
-		}
+	payload := api.FileShareCreate{}
+	if f.opt.LinkPassword != "" {
+		payload.Password = f.opt.LinkPassword
 	}
-	return fmt.Sprintf("%s/share/%s", f.opt.ApiHost, share.ID), nil
+	if expire < fs.DurationOff {
+		expiresAt := time.Now().Add(time.Duration(expire)).UTC()
+		payload.ExpiresAt = &expiresAt
+	}
+	opts := rest.Opts{
+		Method:       "POST",
+		Path:         "/api/v1/files/" + id + "/shares",
+		ExtraHeaders: map[string]string{"Idempotency-Key": uuid.NewString()},
+	}
+	var created api.FileShareCreated
+	if err := f.pacer.Call(func() (bool, error) {
+		resp, callErr := f.srv.CallJSON(ctx, &opts, &payload, &created)
+		return shouldRetry(ctx, resp, callErr)
+	}); err != nil {
+		return "", err
+	}
+	if created.PublicURL == "" {
+		return "", fmt.Errorf("TelDrive returned an empty public URL")
+	}
+	return created.PublicURL, nil
 }
 
 // Open an object for read
@@ -1239,7 +1283,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 	opts := rest.Opts{
 		Method:  "GET",
-		Path:    fmt.Sprintf("/api/files/%s/%s", o.id, url.QueryEscape(o.name)),
+		Path:    fmt.Sprintf("/api/v1/files/%s/content", o.id),
 		Options: options,
 	}
 
@@ -1266,7 +1310,6 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	srcObj, ok := src.(*Object)
 	if !ok {
-		fs.Debugf(src, "Can't copy - not same remote type")
 		return nil, fs.ErrorCantCopy
 	}
 	srcLeaf, srcParentID, err := srcObj.fs.dirCache.FindPath(ctx, src.Remote(), false)
@@ -1277,24 +1320,20 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	if err != nil {
 		return nil, err
 	}
-
 	if srcParentID == directoryID && dstLeaf == srcLeaf {
-		fs.Debugf(src, "Can't copy - change file name")
 		return nil, fs.ErrorCantCopy
 	}
-
 	opts := rest.Opts{
-		Method: "POST",
-		Path:   "/api/files/" + srcObj.id + "/copy",
+		Method:       "POST",
+		Path:         "/api/v1/files/" + srcObj.id + "/copy",
+		ExtraHeaders: map[string]string{"Idempotency-Key": uuid.NewString()},
 	}
-	copy := api.CopyFile{
-		Newname:     dstLeaf,
-		Destination: directoryID,
-		ModTime:     srcObj.ModTime(ctx).UTC(),
+	payload := api.FileCopy{
+		ParentId: requestParentID(directoryID), Name: f.opt.Enc.FromStandardName(dstLeaf), ConflictPolicy: "fail",
 	}
 	var info api.FileInfo
 	err = f.pacer.Call(func() (bool, error) {
-		resp, err := f.srv.CallJSON(ctx, &opts, &copy, &info)
+		resp, err := f.srv.CallJSON(ctx, &opts, &payload, &info)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
@@ -1307,7 +1346,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/api/files/categories",
+		Path:   "/api/v1/files/statistics/categories",
 	}
 	var stats []api.CategorySize
 	err = f.pacer.Call(func() (bool, error) {
@@ -1320,7 +1359,7 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 
 	total := int64(0)
 	for category := range stats {
-		total += stats[category].Size
+		total += stats[category].TotalSize
 	}
 	return &fs.Usage{Used: fs.NewUsageValue(total)}, nil
 }
@@ -1373,7 +1412,7 @@ func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
 	var file api.FileInfo
 	opts := rest.Opts{
 		Method: "GET",
-		Path:   "/api/files/" + o.id,
+		Path:   "/api/v1/files/" + o.id,
 	}
 
 	err := o.fs.pacer.Call(func() (bool, error) {
@@ -1385,8 +1424,8 @@ func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
 		return "", fmt.Errorf("failed to get file hash: %w", err)
 	}
 
-	if file.Hash != "" {
-		o.hash = file.Hash
+	if file.Hash != nil && file.Hash.Value != "" {
+		o.hash = file.Hash.Value
 		return o.hash, nil
 	}
 
@@ -1410,8 +1449,9 @@ func (o *Object) Storable() bool {
 
 // SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
+	modTime = modTime.UTC().Truncate(o.fs.Precision())
 	updateInfo := &api.UpdateFileInformation{
-		ModTime: Ptr(modTime.UTC()),
+		ModTime: Ptr(modTime),
 	}
 	err := o.fs.updateFileInformation(ctx, updateInfo, o.id)
 	if err != nil {
@@ -1426,6 +1466,46 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 // as an optional interface
 func (f *Fs) DirCacheFlush() {
 	f.dirCache.ResetRoot()
+}
+
+func (o *Object) applyFileInfo(info *api.FileInfo) {
+	if o == nil || info == nil {
+		return
+	}
+	o.id = info.Id
+	o.size = info.Size
+	o.parentId = parentIDOrRoot(info.ParentId)
+	o.name = info.Name
+	o.modTime = info.ModTime
+	o.mimeType = info.MimeType
+	o.hash = fileHashValue(info.Hash)
+}
+
+func setParentParameter(values url.Values, parentID string) {
+	if parentID != "" && parentID != rootID {
+		values.Set("parentId", parentID)
+	}
+}
+
+func parentIDOrRoot(parentID string) string {
+	if parentID == "" {
+		return rootID
+	}
+	return parentID
+}
+
+func requestParentID(parentID string) string {
+	if parentID == rootID {
+		return ""
+	}
+	return parentID
+}
+
+func fileHashValue(value *api.FileHash) string {
+	if value == nil || value.Algorithm != "blake3" {
+		return ""
+	}
+	return value.Value
 }
 
 // Check the interfaces are satisfied
