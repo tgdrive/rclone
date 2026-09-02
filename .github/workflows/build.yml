@@ -4,20 +4,8 @@
 
 name: build
 
-# Trigger the workflow on push or pull request
-on:
-  push:
-    branches:
-      - '**'
-    tags:
-      - '**'
-  pull_request:
-  workflow_dispatch:
-    inputs:
-      manual:
-        description: Manual run (bypass default conditions)
-        type: boolean
-        default: true
+# Disabled — builds handled via release.yml
+on: workflow_dispatch
 
 permissions:
   contents: read
@@ -287,7 +275,7 @@ jobs:
           go-version: '~1.27.0'
           check-latest: true
           cache: false
-          
+
       - name: Module cache
         uses: actions/cache@v6
         with:
