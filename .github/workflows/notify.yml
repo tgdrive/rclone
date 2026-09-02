@@ -1,8 +1,7 @@
 name: Notify users based on issue labels
 
-on:
-  issues:
-      types: [labeled]
+# Disabled
+on: workflow_dispatch
 
 permissions:
   contents: read
