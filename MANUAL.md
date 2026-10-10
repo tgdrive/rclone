@@ -1,6 +1,6 @@
 % rclone(1) User Manual
 % Nick Craig-Wood
-% Jul 31, 2026
+% Oct 10, 2026
 
 # NAME
 
@@ -39,6 +39,7 @@ Available commands:
   gui         Open the web based GUI.
   hashsum     Produces a hashsum file for all the objects in the path.
   help        Show help for rclone commands, flags and backends.
+  index       Write static directory listings into a remote.
   link        Generate public link to file/folder.
   listremotes List all the remotes in the config file and defined in environment variables.
   ls          List the objects in the path with size and path.
@@ -199,6 +200,7 @@ WebDAV or S3, that work out of the box.)
 - Cubbit DS3
 - DigitalOcean Spaces
 - Digi Storage
+- dosya.dev
 - Dreamhost
 - Drime
 - Dropbox
@@ -273,6 +275,7 @@ WebDAV or S3, that work out of the box.)
 - RackCorp Object Storage
 - Rackspace Cloud Files
 - Rclone Serve S3
+- RelAix.Storage
 - rsync.net
 - Scaleway
 - Scality (RING / ARTESCA)
@@ -289,6 +292,7 @@ WebDAV or S3, that work out of the box.)
 - Storj
 - Synology
 - SugarSync
+- TelDrive
 - Tencent Cloud Object Storage (COS)
 - Uloz.to
 - US3
@@ -588,12 +592,6 @@ package is here.
 
 The rclone developers maintain a [docker image for rclone](https://hub.docker.com/r/rclone/rclone).
 
-**Note:** We also now offer a paid version of rclone with
-enterprise-grade security and zero CVEs through our partner
-[SecureBuild](https://securebuild.com/blog/introducing-securebuild).
-If you are interested, check out their website and the [Rclone
-SecureBuild Image](https://securebuild.com/images/rclone).
-
 These images are built as part of the release process based on a
 minimal Alpine Linux.
 
@@ -707,7 +705,7 @@ not the rclone developers so it may be out of date. Its current version is as be
 ## Source installation {#source}
 
 Make sure you have git and [Go](https://golang.org/) installed.
-Go version 1.25 or newer is required, the latest release is recommended.
+Go version 1.26 or newer is required, the latest release is recommended.
 You can get it from your package manager, or download it from
 [golang.org/dl](https://golang.org/dl/). Then you can run the following:
 
@@ -1051,6 +1049,7 @@ See the following for detailed instructions for
 - [Crypt](https://rclone.org/crypt/) - to encrypt other remotes
 - [DigitalOcean Spaces](https://rclone.org/s3/#digitalocean-spaces)
 - [Digi Storage](https://rclone.org/koofr/#digi-storage)
+- [dosya.dev](https://rclone.org/dosya/)
 - [Drime](https://rclone.org/drime/)
 - [Dropbox](https://rclone.org/dropbox/)
 - [Enterprise File Fabric](https://rclone.org/filefabric/)
@@ -1099,6 +1098,7 @@ See the following for detailed instructions for
 - [SMB](https://rclone.org/smb/)
 - [Storj](https://rclone.org/storj/)
 - [SugarSync](https://rclone.org/sugarsync/)
+- [TelDrive](https://rclone.org/teldrive/)
 - [Union](https://rclone.org/union/)
 - [Uloz.to](https://rclone.org/ulozto/)
 - [WebDAV](https://rclone.org/webdav/)
@@ -17247,9 +17247,11 @@ This will touch `--transfers` files concurrently.
 If `--timestamp` is used then sets the modification time to that
 time instead of the current time. Times may be specified as one of:
 
-- 'YYMMDD' - e.g. 17.10.30
+- 'YYMMDD' - e.g. 171030
+- 'YYYY-MM-DD' - e.g. 2006-01-02
 - 'YYYY-MM-DDTHH:MM:SS' - e.g. 2006-01-02T15:04:05
 - 'YYYY-MM-DDTHH:MM:SS.SSS' - e.g. 2006-01-02T15:04:05.123456789
+- 'YYYY-MM-DDTHH:MM:SSZ' - e.g. 2006-01-02T15:04:05Z
 
 Note that value of `--timestamp` is in UTC. If you want local time
 then add the `--localtime` flag.
@@ -18110,7 +18112,7 @@ as a number of seconds. The following suffixes are valid:
 - `M`  - Months
 - `y`  - Years
 
-Examples: "10", "300ms", "-1.5h" or "2h45m".
+Examples: "10", "300ms", "-1.5h", "2h45m" or "1d12h".
 
 ### Size options
 
@@ -18256,7 +18258,7 @@ example:
 Is equivalent to this:
 
 ```text
---bwlimit "Mon-00:00,512Mon-12:00,1M Tue-12:00,1M Wed-12:00,1M Thu-12:00,1M Fri-12:00,1M Sat-12:00,1M Sun-12:00,1M Sun-20:00,off"
+--bwlimit "Mon-00:00,512 Mon-12:00,1M Tue-12:00,1M Wed-12:00,1M Thu-12:00,1M Fri-12:00,1M Sat-12:00,1M Sun-12:00,1M Sun-20:00,off"
 ```
 
 Bandwidth limit apply to the data transfer for all backends. For most
@@ -18309,7 +18311,8 @@ will use this much memory for buffering.
 
 When using `mount` or `cmount` each open file descriptor will use this much
 memory for buffering.
-See the [mount](https://rclone.org/commands/rclone_mount/#file-buffering) documentation for more details.
+See the [mount](https://rclone.org/commands/rclone_mount/#vfs-file-buffering) documentation for
+more details.
 
 Set to `0` to disable the buffering for the minimum memory usage.
 
@@ -18729,6 +18732,12 @@ This flag is supported for all HTTP based backends even those not
 supported by `--header-upload` and `--header-download` so may be used
 as a workaround for those with care.
 
+The headers are only sent to the host of the original request. If the
+server redirects to another host (including a subdomain or a different
+port), or redirects an `https` request to `http`, the headers are not
+sent to it, or to any further hop in that redirect chain. Rclone logs
+this at debug level (`-vv`).
+
 ```console
 rclone ls remote:test --header "X-Rclone: Foo" --header "X-LetMeIn: Yes"
 ```
@@ -18967,7 +18976,7 @@ like symlinks under Windows). Ignored files won't be copied, moved or
 deleted in a sync.
 
 If you supply this flag then rclone will copy symbolic links from any
-supported backend backend, and store them as text files, with a
+supported backend, and store them as text files, with a
 `.rclonelink` suffix in the destination.
 
 The text file will contain the target of the symbolic link.
@@ -19499,7 +19508,7 @@ rclone will use multiple threads to transfer the file (default 256M).
 Capable backends are marked in the
 [overview](https://rclone.org/overview/#optional-features) as `MultithreadUpload`. (They
 need to implement either the `OpenWriterAt` or `OpenChunkWriter`
-internal interfaces). These include include, `local`, `s3`,
+internal interfaces). These include `local`, `s3`,
 `azureblob`, `b2`, `oracleobjectstorage` and `smb` at the time of
 writing.
 
@@ -19526,7 +19535,7 @@ Most multi-thread transfers do not take additional memory, but some do
 at maximum `--transfers` \* `--multi-thread-chunk-size` \*
 `--multi-thread-streams` or specifically for the s3 backend
 `--transfers` \* `--s3-chunk-size` \* `--s3-concurrency`. However you
-can use the the [--max-buffer-memory](https://rclone.org/docs/#max-buffer-memory) flag
+can use the [--max-buffer-memory](https://rclone.org/docs/#max-buffer-memory) flag
 to control the maximum memory used here.
 
 **NB** that this **only** works with supported backends as the
@@ -19644,8 +19653,10 @@ describes what aspect is being measured:
 - `size` - order by the size of the files
 - `name` - order by the full path of the files
 - `modtime` - order by the modification date of the files
+- `pattern` - order by a list of path glob patterns
 
-This can have a modifier appended with a comma:
+The `size`, `name` and `modtime` comparisons can have a modifier appended with
+a comma:
 
 - `ascending` or `asc` - order so that the smallest (or oldest) is processed first
 - `descending` or `desc` - order so that the largest (or newest) is processed first
@@ -19664,11 +19675,18 @@ processed continuously.
 
 If no modifier is supplied then the order is `ascending`.
 
+For `pattern`, append one or more comma-separated patterns. Patterns use the
+[filter pattern syntax](https://rclone.org/filtering/#patterns). Files matching the first pattern
+are processed first, followed by files matching the second pattern, and so on.
+Files which do not match a pattern are processed last. Within each group, files
+are ordered by full path. Patterns cannot contain a comma.
+
 For example
 
 - `--order-by size,desc` - send the largest files first
 - `--order-by modtime,ascending` - send the oldest files first
 - `--order-by name` - send the files with alphabetically by path first
+- `--order-by 'pattern,*.tar.gz,*.md5'` - send archives before checksum files
 
 If the `--order-by` flag is not supplied or it is supplied with an
 empty string then the default ordering will be used which is as
@@ -19710,8 +19728,9 @@ setting the config password for the first time.
 The argument to this should be a command with a space separated list
 of arguments. If one of the arguments has a space in then enclose it
 in `"`, if you want a literal `"` in an argument then enclose the
-argument in `"` and double the `"`. See [CSV encoding](https://godoc.org/encoding/csv)
-for more info.
+argument in `"` and double the `"`. This includes the command itself:
+if the path to the executable contains a space, it must be quoted too.
+See [CSV encoding](https://godoc.org/encoding/csv) for more info.
 
 Eg
 
@@ -19719,6 +19738,7 @@ Eg
 --password-command "echo hello"
 --password-command 'echo "hello with space"'
 --password-command 'echo "hello with ""quotes"" and space"'
+--password-command '"/path with a space/get-password.sh"'
 ```
 
 Note that when changing the configuration password the environment
@@ -22049,6 +22069,10 @@ When you run `rclone gui` this is what happens
 - The URL already contains the username & password, in which case the
   GUI will use those values and log you in automatically.
 
+The rc address is passed to the GUI via the `url` query parameter (the
+URL printed in the terminal); append `?url=http://...` to point it at a
+different rc server.
+
 ## Security
 
 It's important to think first about what rclone has access to and what
@@ -22259,9 +22283,20 @@ Default Off.
 
 Set the allowed Access-Control-Allow-Origin for rc requests.
 
-Can be used with --rc-web-gui if the rclone is running on different IP than the web-gui.
+This enables cross-origin (CORS) requests from browsers on the origin
+given, for example `--rc-allow-origin https://app.example.com`. Browser
+CORS preflight OPTIONS requests are answered by rclone without
+authentication as browsers never send credentials with them. All other
+requests, including other OPTIONS requests, must be authenticated when
+authentication is enabled.
 
-Default is IP address on which rc is running.
+The `rclone gui` command sets this automatically to the origin the GUI
+is served from if it is not set explicitly.
+
+Setting this to `*` allows any origin which is a security risk on an
+authenticated server.
+
+Default is off (no CORS).
 
 ### --rc-web-fetch-url
 
@@ -24751,9 +24786,11 @@ The keys in the error response are:
 
 ### CORS
 
-The sever implements basic CORS support and allows all origins for that.
-The response to a preflight OPTIONS request will echo the requested
-"Access-Control-Request-Headers" back.
+The server implements basic CORS support when `--rc-allow-origin` is
+set. Browser CORS preflight OPTIONS requests are then answered by
+rclone without authentication with the `Access-Control-*` headers.
+Without `--rc-allow-origin` no CORS headers are sent and a preflight
+request is authenticated like any other request.
 
 ### Using POST with URL parameters only
 
@@ -27468,6 +27505,7 @@ Optional Flags:
       --force                                Bypass --max-delete safety check and run the sync. Consider using with --verbose
   -h, --help                                 help for bisync
       --ignore-listing-checksum              Do not use checksums for listings (add --ignore-checksum to additionally skip post-copy checksum checks)
+      --max-delete-renames-aware             Exclude tracked renames from the --max-delete safety check (requires --track-renames)
       --max-lock Duration                    Consider lock files older than this to be expired (default: 0 (never expire)) (minimum: 2m) (default 0s)
       --no-cleanup                           Retain working files (useful for troubleshooting and testing).
       --no-slow-hash                         Ignore listing checksums only on backends where they are slow
@@ -27680,7 +27718,7 @@ Time stamps and file contents for `RCLONE_TEST` files are not important, just
 the names and locations. If you have symbolic links in your sync tree it is
 recommended to place `RCLONE_TEST` files in the linked-to directory tree to
 protect against bisync assuming a bunch of deleted files if the linked-to tree
-should not be accessible. See also the [--check-filename](--check-filename) flag.
+should not be accessible. See also the [--check-filename](#check-filename) flag.
 
 ### --check-filename
 
@@ -27856,6 +27894,23 @@ e.g. `--max-delete 75` (allows up to 75% deletion), or use `--force`
 to bypass the check.
 
 Also see the [all files changed](#all-files-changed) check.
+
+### --max-delete-renames-aware
+
+When `--track-renames` is in use, `--max-delete-renames-aware` can exclude
+files that are guaranteed to match as tracked renames from the deletion count.
+If the initial deletion count exceeds `--max-delete`, bisync performs a rename
+matching preflight before starting either sync direction. The run still aborts
+if the remaining unmatched deletions exceed the limit.
+
+The preflight uses the selected [`--track-renames-strategy`](https://rclone.org/docs/#track-renames-strategy)
+and the attributes stored in the normal bisync listings. A hash strategy forces
+both listings to use a common hash and is incompatible with
+`--ignore-listing-checksum`. The option only exempts matches when the destination
+supports server-side moves or copies and the selected strategy is supported by both paths.
+It requires `--track-renames` and is disabled by default because hashing may add
+listing time. `--force` bypasses both the safety check and this preflight.
+The preflight is also disabled during `--resync`, when rename tracking is unavailable.
 
 ### --filters-file {#filters-file}
 
@@ -28529,10 +28584,10 @@ is to rename it to the same name on both sides. (As of `rclone v1.64`,
 a `--resync` is no longer required after doing so, as bisync will automatically
 detect that Path1 and Path2 are in agreement.)
 
-Note that although the flag --track-renames ensures that renamed/moved files won't
-be deleted and uploaded again, they are still counted as deleted files for purposes
-of the --max-delete flag (as this check happens before the rename detection
-operation). See [this issue](https://github.com/rclone/rclone/issues/8685).
+By default, renamed or moved files are still counted as deleted files for
+purposes of `--max-delete`, because the safety check happens before rename
+detection. Use `--max-delete-renames-aware` together with `--track-renames` to
+run a rename preflight and exclude guaranteed matches from this count.
 
 ### `--fast-list` used by default
 
@@ -29272,6 +29327,11 @@ about *Unison* and synchronization in general.
 
 ## Changelog
 
+### `v1.76`
+
+- Added `--max-delete-renames-aware` to exclude guaranteed tracked renames from
+the `--max-delete` safety check when used with `--track-renames`.
+
 ### `v1.74.2`
 
 - Fixed an issue causing `--conflict-loser pathname` to produce unexpected
@@ -29318,7 +29378,7 @@ and far less prone to critical errors / undetected changes
 - Bisync is now capable of rolling a file listing back in cases of uncertainty,
 essentially marking the file as needing to be rechecked next time.
 - A few basic terminal colors are now supported, controllable with
-[`--color`](https://rclone.org/docs/#color) (`AUTO`|`NEVER`|`ALWAYS`)
+[`--color`](https://rclone.org/docs/#color-autoneveralways) (`AUTO`|`NEVER`|`ALWAYS`)
 - Initial listing snapshots of Path1 and Path2 are now generated concurrently,
 using the same "march" infrastructure as `check` and `sync`,
 for performance improvements and less
@@ -29331,7 +29391,7 @@ for performance improvements and less
 options as in `sync`)
 - Equality checks before a sync conflict rename now fall back to `cryptcheck`
 (when possible) or `--download`,
-instead of of `--size-only`, when `check` is not available.
+instead of `--size-only`, when `check` is not available.
 - Bisync no longer fails to find the correct listing file when configs are
 overridden with backend-specific flags.
 - Bisync now fully supports comparing based on any combination of size, modtime,
@@ -29348,7 +29408,7 @@ behavior with new [`--conflict-resolve`](#conflict-resolve),
 [`--conflict-suffix`](#conflict-suffix) flags.
 - A new [`--resync-mode`](#resync-mode) flag allows more control over which
 version of a file gets kept during a `--resync`.
-- Bisync now supports [`--retries`](https://rclone.org/docs/#retries-int) and [`--retries-sleep`](/docs/#retries-sleep-time)
+- Bisync now supports [`--retries`](https://rclone.org/docs/#retries-int) and [`--retries-sleep`](/docs/#retries-sleep-duration)
 (when [`--resilient`](#resilient) is set.)
 
 ### `v1.64`
@@ -29500,19 +29560,23 @@ Repeat for `MD5SUMS` and `SHA1SUMS` if desired.
 Now that we know the signatures on the hashes are OK we can verify the
 binaries match the hashes, completing the verification.
 
+Extract the signed data with:
+
 ```console
-$ sha256sum -c SHA256SUMS 2>&1 | grep OK
+$ gpg --output SHA256SUMS.signed --decrypt SHA256SUMS
+```
+
+Then check the binaries:
+
+```console
+$ sha256sum -c --ignore-missing SHA256SUMS.signed
 rclone-v1.63.1-windows-amd64.zip: OK
 ```
 
 Or do the check with rclone
 
 ```console
-$ rclone hashsum sha256 -C SHA256SUMS rclone-v1.63.1-windows-amd64.zip 
-2023/09/11 10:53:58 NOTICE: SHA256SUMS: improperly formatted checksum line 0
-2023/09/11 10:53:58 NOTICE: SHA256SUMS: improperly formatted checksum line 1
-2023/09/11 10:53:58 NOTICE: SHA256SUMS: improperly formatted checksum line 49
-2023/09/11 10:53:58 NOTICE: SHA256SUMS: 4 warning(s) suppressed...
+$ rclone hashsum sha256 -C SHA256SUMS.signed rclone-v1.63.1-windows-amd64.zip
 = rclone-v1.63.1-windows-amd64.zip
 2023/09/11 10:53:58 NOTICE: Local file system at /tmp/check: 0 differences found
 2023/09/11 10:53:58 NOTICE: Local file system at /tmp/check: 1 matching files
@@ -29934,6 +29998,7 @@ The S3 backend can be used with a number of different providers:
 - Rabata Cloud Storage
 - RackCorp Object Storage
 - Rclone Serve S3
+- RelAix.Storage
 - Scaleway
 - Scality (RING / ARTESCA)
 - Seagate Lyve Cloud
@@ -30789,6 +30854,9 @@ tries to access data from the glacier storage class you will see an error like b
 ```text
 2017/09/11 19:07:43 Failed to sync: failed to open source object: Object in GLACIER, restore first: path/to/file
 ```
+
+The message shows the object's actual storage class, for example
+`DEEP_ARCHIVE`.
 
 In this case you need to [restore](http://docs.aws.amazon.com/AmazonS3/latest/user-guide/restore-archived-objects.html)
 the object(s) in question before accessing object contents.
@@ -34725,15 +34793,15 @@ section above.
 From rclone v1.69 [Directory Buckets](https://docs.aws.amazon.com/AmazonS3/latest/userguide/directory-buckets-overview.html)
 are supported.
 
-You will need to set the `directory_buckets = true` config parameter
-or use `--s3-directory-buckets`.
+You will need to set the `directory_bucket = true` config parameter
+or use `--s3-directory-bucket`.
 
 Note that rclone cannot yet:
 
 - Create directory buckets
 - List directory buckets
 
-See [the --s3-directory-buckets flag](#s3-directory-buckets) for more info
+See [the --s3-directory-bucket flag](#s3-directory-bucket) for more info
 
 ### AWS Snowball Edge
 
@@ -35044,6 +35112,12 @@ version of rclone before v1.59 then you may need to supply the
 parameter `--s3-upload-cutoff 0` or put this in the config file as
 `upload_cutoff 0` to work around a bug which causes uploading of small
 files to fail.
+
+Rclone defaults `sign_accept_encoding` to false for the Ceph provider.
+That avoids `SignatureDoesNotMatch` errors when a reverse proxy (for
+example Cloudflare) rewrites the `Accept-Encoding` request header. You
+can override this with `--s3-sign-accept-encoding` / `sign_accept_encoding`
+if needed.
 
 Note also that Ceph sometimes puts `/` in the passwords it gives
 users.  If you read the secret access key using the command line tools
@@ -37363,6 +37437,10 @@ secret_access_key = SECRET_ACCESS_KEY
 endpoint = eu-central-1.linodeobjects.com
 ```
 
+Linode Object Storage is Ceph-backed. Rclone defaults
+`sign_accept_encoding` to false for this provider so SigV4 requests do
+not fail with `SignatureDoesNotMatch` (see the [Ceph](#ceph) section).
+
 ### Magalu {#magalu}
 
 Here is an example of making a [Magalu Object Storage](https://magalu.cloud/object-storage/)
@@ -38806,6 +38884,134 @@ use_multipart_uploads = false
 
 Note that setting `use_multipart_uploads = false` is to work around
 [a bug](https://rclone.org/commands/rclone_serve_s3/#bugs) which will be fixed in due course.
+
+### RelAix.Storage {#relaix}
+
+RelAix.Storage is S3 compatible object storage from
+[RelAix Networks](https://www.relaix.net/), operated in its own data
+centres in Aachen, Germany.
+There are two locations, Aachen-1 and Aachen-2, each with its own endpoint.
+Buckets and data stay at the location of the endpoint you use.
+
+You get an access key and a secret key from RelAix Networks. Then run:
+
+```console
+rclone config
+```
+
+This will guide you through an interactive setup process.
+
+```text
+No remotes found, make a new one?
+n) New remote
+s) Set configuration password
+q) Quit config
+n/s/q> n
+
+Enter name for new remote.
+name> my-relaix
+
+Option Storage.
+Type of storage to configure.
+Choose a number from below, or type in your own value.
+[snip]
+XX / Amazon S3 Compliant Storage Providers including AWS, ...
+   \ (s3)
+[snip]
+Storage> s3
+
+Option provider.
+Choose your S3 provider.
+Choose a number from below, or type in your own value.
+Press Enter to leave empty.
+[snip]
+XX / RelAix.Storage
+   \ (RelAix)
+[snip]
+provider> RelAix
+
+Option env_auth.
+Get AWS credentials from runtime (environment variables or EC2/ECS meta data if no env vars).
+Only applies if access_key_id and secret_access_key is blank.
+Choose a number from below, or type in your own boolean value (true or false).
+Press Enter for the default (false).
+ 1 / Enter AWS credentials in the next step.
+   \ (false)
+ 2 / Get AWS credentials from the environment (env vars or IAM).
+   \ (true)
+env_auth>
+
+Option access_key_id.
+AWS Access Key ID.
+Leave blank for anonymous access or runtime credentials.
+Enter a value. Press Enter to leave empty.
+access_key_id> ACCESS_KEY
+
+Option secret_access_key.
+AWS Secret Access Key (password).
+Leave blank for anonymous access or runtime credentials.
+Enter a value. Press Enter to leave empty.
+secret_access_key> SECRET_KEY
+
+Option endpoint.
+Endpoint for S3 API.
+Required when using an S3 clone.
+Choose a number from below, or type in your own value.
+Press Enter to leave empty.
+ 1 / Aachen-1, Germany
+   \ (s3-gw1.relaix.net)
+ 2 / Aachen-2, Germany
+   \ (s3-gw2.relaix.net)
+endpoint> 1
+
+Option acl.
+Canned ACL used when creating buckets and storing or copying objects.
+[snip]
+acl>
+
+Option bucket_object_lock_enabled.
+Enable Object Lock when creating new buckets.
+Enter a boolean value (true or false). Press Enter for the default (false).
+bucket_object_lock_enabled>
+
+Edit advanced config?
+y) Yes
+n) No (default)
+y/n> n
+
+Configuration complete.
+Options:
+- type: s3
+- provider: RelAix
+- access_key_id: ACCESS_KEY
+- secret_access_key: SECRET_KEY
+- endpoint: s3-gw1.relaix.net
+Keep this "my-relaix" remote?
+y) Yes this is OK (default)
+e) Edit this remote
+d) Delete this remote
+y/e/d> y
+```
+
+This will leave the config file looking like this.
+
+```ini
+[my-relaix]
+type = s3
+provider = RelAix
+access_key_id = ACCESS_KEY
+secret_access_key = SECRET_KEY
+endpoint = s3-gw1.relaix.net
+```
+
+Object Lock can only be enabled when a bucket is created. To create buckets
+with Object Lock, set `bucket_object_lock_enabled = true` before running
+`rclone mkdir`.
+
+To lock objects on upload with `object_lock_mode`, also set
+`object_lock_set_after_upload = true`. RelAix.Storage does not yet apply
+Object Lock headers sent with multipart uploads, so rclone needs to set the
+lock in a separate call after the upload.
 
 ### Scaleway
 
@@ -40706,6 +40912,25 @@ Rclone works fastest with large squashfs block sizes. For example:
 
 ```
 mksquashfs 100files 100files.sqfs -comp zstd -b 1M
+```
+
+## Symlinks
+
+Symlinks stored in an archive are skipped unless the `-l/--links` flag
+is supplied, as they are on the other backends. With the flag they are
+listed with a `.rclonelink` suffix and read back as the path they point
+at, the same convention the [local](https://rclone.org/local/#symlinks-junction-points)
+backend uses, so they can be copied back as symlinks:
+
+```
+$ rclone lsl --links :archive:/tmp/test.zip
+        5 2026-09-28 14:16:59.000000000 src/file.txt
+        8 2026-09-28 14:16:59.000000000 src/link.txt.rclonelink
+$ rclone cat --links :archive:/tmp/test.zip/src/link.txt.rclonelink
+file.txt
+$ rclone copy --links :archive:/tmp/test.zip /tmp/out
+$ ls -l /tmp/out/src/link.txt
+lrwxr-xr-x 1 user user 8 Sep 28 14:16 /tmp/out/src/link.txt -> file.txt
 ```
 
 ## Limitations
@@ -44801,6 +45026,15 @@ This means that
 - filenames with the same name will encrypt the same
 - filenames which start the same won't have a common prefix
 
+A version string of the form `-vYYYY-MM-DD-HHMMSS-NNN` on the end of a
+file name (as added by `--b2-versions` / `--s3-versions`) is left in
+plain text so that versioned files can be found. Directory names are
+encrypted in full. Rclone before v1.76 left such a suffix in plain
+text on directory names too, so a directory named like this created by
+an older rclone will appear in listings with a warning but can't be
+opened or removed until renamed on the underlying remote to the name
+given in the warning.
+
 This uses a 32 byte key (256 bits) and a 16 byte (128 bits) IV both of
 which are derived from the user password.
 
@@ -45422,6 +45656,287 @@ will default to those currently in use.
 It doesn't return anything.
 
 <!-- autogenerated options stop -->
+
+# dosya.dev
+
+[dosya.dev](https://dosya.dev) is a cloud file storage, sharing, and
+synchronization platform with workspace-based multi-tenancy, file
+versioning, and team collaboration features.
+
+## Configuration
+
+Here is an example of how to make a remote called `remote`. First run:
+
+```console
+rclone config
+```
+
+This will guide you through an interactive setup process:
+
+```text
+No remotes found, make a new one?
+n) New remote
+s) Set configuration password
+q) Quit config
+n/s/q> n
+
+Enter name for new remote.
+name> remote
+
+Option Storage.
+Type of storage to configure.
+Choose a number from below, or type in your own value.
+XX / dosya.dev
+   \ (dosya)
+Storage> dosya
+
+Option api_key.
+Your API Key, get it from https://dosya.dev/profile under "API keys".
+Enter a value.
+api_key> dos_YOURAPIKEY
+
+Option workspace_id.
+Your workspace ID.
+
+Leave this blank to use the one workspace the API key can reach, which
+is what a key restricted to a single workspace does. If the key can
+reach several, rclone will refuse and list their IDs for you to choose
+from.
+Enter a value. Press Enter to leave empty.
+workspace_id>
+
+Edit advanced config?
+y) Yes
+n) No (default)
+y/n> n
+
+Configuration complete.
+Options:
+- type: dosya
+- api_key: dos_YOURAPIKEY
+Keep this "remote" remote?
+y) Yes this is OK (default)
+e) Edit this remote
+d) Delete this remote
+y/e/d> y
+```
+
+Once configured you can then use `rclone` like this (replace `remote`
+with the name you gave your remote):
+
+List directories and files in the top level of your dosya workspace
+
+```console
+rclone lsf remote:
+```
+
+To copy a local directory to a dosya directory called backup
+
+```console
+rclone copy /home/source remote:backup
+```
+
+The dosya backend uploads large files in parts and stores them as single
+files that remain accessible through the web app and other clients. If you
+previously used a WebDAV remote with a chunker overlay for large uploads,
+you can use this backend without the overlay.
+
+### Getting your API key
+
+1. Log in to [dosya.dev](https://dosya.dev)
+2. Go to [Profile](https://dosya.dev/profile) > **API keys**
+3. Create a new API key
+4. Copy the key (starts with `dos_`)
+
+A key can be restricted to a single workspace when you create it, which
+is the simplest thing to do for rclone: `workspace_id` can then be left
+out of the config entirely.
+
+### Workspaces
+
+Leave `workspace_id` blank and rclone asks which workspaces the key can
+reach. A key restricted to one workspace, and an account that has only
+one, both resolve without any configuration. If the key can reach
+several, rclone refuses and lists their IDs so you can set the one you
+want:
+
+```text
+this API key can reach 2 workspaces, so workspace_id must be set to one of:
+    ws_AAAAAAAA (Work)
+    ws_BBBBBBBB (Personal)
+```
+
+To access several workspaces at once, create a separate remote for each:
+
+```console
+rclone config create work dosya api_key=dos_XXX workspace_id=ws_WORK
+rclone config create personal dosya api_key=dos_XXX workspace_id=ws_PERSONAL
+```
+
+Then use them independently:
+
+```console
+rclone ls work:
+rclone copy work:docs/ personal:backup/
+```
+
+### Modification times and hashes
+
+dosya.dev supports modification times with a resolution of 1 second. The
+modification time is sent with the upload, so a copied or synced file keeps
+its original timestamp. Modification times cannot be changed after upload
+without re-uploading the file.
+
+dosya.dev supports SHA-256 checksums. The server computes the hash of a
+single-shot (small file) upload from the bytes it receives, so `rclone check`
+and hash-based sync work without downloading. Large files uploaded in multiple
+parts have no server-side hash (the parts are never re-read to hash the whole
+object), the same limitation the S3 backend has for multipart objects; those
+objects report an empty hash.
+
+### Restricted filename characters
+
+In addition to the [default restricted characters set](https://rclone.org/overview/#restricted-characters)
+the following characters are also replaced:
+
+| Character | Value | Replacement |
+| --------- |:-----:|:-----------:|
+| "         | 0x22  | ＂           |
+| '         | 0x27  | ＇           |
+| <         | 0x3C  | ＜           |
+| >         | 0x3E  | ＞           |
+| \         | 0x5C  | ＼           |
+
+Invalid UTF-8 bytes will also be [replaced](https://rclone.org/overview/#invalid-utf8),
+as they can't be used in JSON strings.
+
+### Public Links
+
+dosya.dev supports `rclone link` to create public share links to
+files. You can use the `--expire` flag to specify how long the link
+should be valid.
+
+```console
+rclone link remote:path/to/file.txt
+rclone link --expire 7d remote:path/to/file.txt
+```
+
+<!-- autogenerated options start - DO NOT EDIT - instead edit fs.RegInfo in backend/dosya/dosya.go and run make backenddocs to verify --> <!-- markdownlint-disable-line line-length -->
+### Standard options
+
+Here are the Standard options specific to dosya (dosya.dev).
+
+#### --dosya-api-key
+
+Your API Key, get it from https://dosya.dev/profile under "API keys".
+
+Properties:
+
+- Config:      api_key
+- Env Var:     RCLONE_DOSYA_API_KEY
+- Type:        string
+- Required:    true
+
+#### --dosya-workspace-id
+
+Your workspace ID.
+
+Leave this blank to use the one workspace the API key can reach, which
+is what a key restricted to a single workspace does. If the key can
+reach several, rclone will refuse and list their IDs for you to choose
+from.
+
+Properties:
+
+- Config:      workspace_id
+- Env Var:     RCLONE_DOSYA_WORKSPACE_ID
+- Type:        string
+- Required:    false
+
+### Advanced options
+
+Here are the Advanced options specific to dosya (dosya.dev).
+
+#### --dosya-api-url
+
+API base URL.
+
+Properties:
+
+- Config:      api_url
+- Env Var:     RCLONE_DOSYA_API_URL
+- Type:        string
+- Default:     "https://api.dosya.dev"
+
+#### --dosya-upload-concurrency
+
+Concurrency for multipart uploads.
+
+This is the number of parts of the same file that are uploaded
+concurrently. The first part is always uploaded on its own, because
+the server creates the upload when it receives it.
+
+Each part in flight is held in memory, so memory use grows with
+this value times the part size the server chooses.
+
+If you are uploading large files over high-speed links and these
+uploads do not fully utilize your bandwidth, then increasing this
+may help to speed up the transfers.
+
+Properties:
+
+- Config:      upload_concurrency
+- Env Var:     RCLONE_DOSYA_UPLOAD_CONCURRENCY
+- Type:        int
+- Default:     4
+
+#### --dosya-encoding
+
+The encoding for the backend.
+
+See the [encoding section in the overview](https://rclone.org/overview/#encoding) for more info.
+
+Properties:
+
+- Config:      encoding
+- Env Var:     RCLONE_DOSYA_ENCODING
+- Type:        Encoding
+- Default:     Slash,LtGt,DoubleQuote,SingleQuote,BackSlash,Del,Ctl,LeftSpace,RightSpace,InvalidUtf8,Dot
+
+#### --dosya-description
+
+Description of the remote.
+
+Properties:
+
+- Config:      description
+- Env Var:     RCLONE_DOSYA_DESCRIPTION
+- Type:        string
+- Required:    false
+
+<!-- autogenerated options stop -->
+
+## Limitations
+
+dosya.dev only supports filenames up to 255 characters in length.
+
+Empty files (0 bytes) cannot be uploaded to dosya.dev.
+
+Upload requires knowing the file size in advance, so streaming
+uploads of unknown-size files are not supported.
+
+Each workspace limits the number of uploads a user can have in flight
+at once (5 by default, configurable in the workspace settings). When
+`--transfers` is set higher than that limit, rclone waits for a free
+upload slot rather than failing the transfer, retrying every 5 seconds
+for up to 10 minutes.
+
+### Deleting files and directories
+
+rclone deletes files and directories permanently, in a single request
+(`DELETE ?permanent=1`), bypassing the workspace trash. Removing a
+directory also asks the server whether it is empty (`?if_empty=1`)
+rather than listing it first.
 
 # Drime
 
@@ -47357,6 +47872,34 @@ excess files in the directory.
 ```console
 rclone sync --interactive /home/local/directory remote:dir
 ```
+
+### Restricted filename characters
+
+In addition to the [default restricted characters set](https://rclone.org/overview/#restricted-characters)
+the following characters are also replaced:
+
+| Character | Value | Replacement |
+| --------- |:-----:|:-----------:|
+| \         | 0x5C  | ＼           |
+
+File names can also not end with the following characters.
+These only get replaced if they are the last character in the name:
+
+| Character | Value | Replacement |
+| --------- |:-----:|:-----------:|
+| SP        | 0x20  | ␠           |
+| LF        | 0x0A  | ␊           |
+| CR        | 0x0D  | ␍           |
+| HT        | 0x09  | ␉           |
+| VT        | 0x0B  | ␋           |
+
+Invalid UTF-8 bytes will also be [replaced](https://rclone.org/overview/#invalid-utf8).
+
+Files.com treats the replacements `／` and `＼` as if they were `/`
+and `\`, and the names `．` and `．．` as if they were `.` and `..`,
+and rejects them with `Invalid path`. This means that files with `/`
+or `\` in their names, or which are called `.` or `..`, can't be
+stored on Files.com.
 
 ### Hashes
 
@@ -50997,7 +51540,7 @@ The result is a JSON array of matches, for example:
         "webViewLink": "https://drive.google.com/file/d/0AxBe_CDEF4zkGHI4d0FjYko2QkD/view?usp=drivesdk\u0026resourcekey=0-ABCDEFGHIXJQpIGqBJq3MC"
     }
 ]
-```console
+```
 
 ### rescue
 
@@ -51174,7 +51717,7 @@ including
     You should now see the three scopes on your Data access page. Now press save
     at the bottom!
 
-6. After adding scopes, click Audience
+6. After adding scopes, click Audience.
 Scroll down and click "+ Add users". Add yourself as a test user and press save.
 
 7. Go to Overview on the left panel, click "Create OAuth client". Choose
@@ -51187,6 +51730,15 @@ Scroll down and click "+ Add users". Add yourself as a test user and press save.
 
 9. Go to "Audience" and then click "PUBLISH APP" button and confirm.
    Add yourself as a test user if you haven't already.
+
+    (If the "PUBLISH APP" button is greyed out, Google now requires a
+    homepage URL and a privacy policy URL before publishing, even for a
+    personal single-user app. Go to "Branding" in the left panel, fill in
+    "Application home page" and "Application privacy policy link" - a free
+    GitHub Pages site is fine for these if you don't have a domain of your
+    own - then "Authorized domains" with the domain you used, and click
+    Save. Return to "Audience" and the "PUBLISH APP" button should now be
+    available.)
 
 10. Provide the noted client ID and client secret to rclone.
 
@@ -52406,9 +52958,18 @@ Before accessing Drive service, developers need to create a server application f
 
 #### Enable Drive Application Switch
 
-1. Log in to the AppGallery Connect website and click "My Projects".
-2. Find your project in the project list, select the application that needs to access Drive in the project, and click "API Management".
-3. In the "API Management" area of the "Project Settings" page, click the switch on the right side of Drive Kit to ensure the switch is in the open state.
+1. Log in to AppGallery Connect with your Huawei account.
+2. Create a project or select an existing project.
+3. Add a web application to the project.
+4. Open "Project settings" for the application and copy the OAuth 2.0 Client
+   ID and Client Secret from the "General" tab.
+5. Open "API Management" for the project and enable "Cloud Drive".
+6. Add `http://127.0.0.1:53682/` as a redirect URI for the OAuth 2.0 Client
+   ID.
+
+The older Huawei Developer Console may show some of the same credential
+information, but AppGallery Connect is the place to create the project,
+application, API permission, and redirect URI used by rclone.
 
 #### Sign Huawei Cloud Drive Privacy Notice and User Agreement
 
@@ -52420,23 +52981,12 @@ Applications accessing Drive should use authentication credential Access Token. 
 
 Key steps summary:
 
-1. Log into the [Huawei Developer Console](https://developer.huawei.com/consumer/en/console) with your Huawei account.
-
-2. Create a new project or select an existing project.
-
-3. Go to "Manage APIs" and enable the "Drive Kit" API.
-
-4. Click on "Credentials" in the left side panel.
-
-5. Click "Create Credentials" and choose "OAuth client ID".
-
-6. Choose "Web application" as the application type.
-
-7. Add `http://localhost:53682/` to the "Authorized redirect URIs".
-
-8. Click "Create" and note down the Client ID and Client Secret.
-
-9. Provide the noted client ID and client secret to rclone during configuration.
+1. Create or select a project in AppGallery Connect.
+2. Add a web application to the project.
+3. Enable Cloud Drive in API Management.
+4. Configure `http://127.0.0.1:53682/` as the OAuth redirect URI.
+5. Copy the OAuth 2.0 Client ID and Client Secret from the application.
+6. Provide the client ID and client secret to rclone during configuration.
 
 ### Scopes
 
@@ -53549,11 +54099,13 @@ it will be resolved relative to this url, according to the URL standard. This
 means with remote url `https://beta.rclone.org/branch` and path `fix`, the
 resolved URL will be `https://beta.rclone.org/branch/fix`, while with path
 `/fix` the resolved URL will be `https://beta.rclone.org/fix` as the absolute
-path is resolved from the root of the domain.
+path is resolved from the root of the domain. The path can't change the scheme,
+host or user of the configured url, so a path such as `//other.example.com/fix`
+is rejected.
 
 If the path following the `remote:` ends with `/` it will be assumed to point
 to a directory. If the path does not end with `/`, then a HEAD request is sent
-and the response used to decide if it it is treated as a file or a directory
+and the response used to decide if it is treated as a file or a directory
 (run with `-vv` to see details). When [--http-no-head](#http-no-head) is
 specified, a path without ending `/` is always assumed to be a file. If rclone
 incorrectly assumes the path is a file, the solution is to specify the path with
@@ -57479,6 +58031,24 @@ when `--metadata` is enabled (or when using `--metadata-set` / `--metadata-mappe
 Notes:
 - Rclone ignores reserved `x-ms-*` keys (except `x-ms-tags`) for user metadata.
 
+### Hierarchical namespace
+
+Storage accounts with hierarchical namespace enabled (Azure Data Lake
+Storage Gen2) have real directories. On these accounts rclone supports
+empty directories, creating them with `rclone mkdir` and removing
+them with `rclone rmdir`, whatever the `--azureblob-directory-markers`
+setting.
+
+Note that deleting the last file in a directory leaves the directory
+behind. Use `rclone rmdirs` or `--delete-empty-src-dirs` to remove
+empty directories.
+
+Rclone reads whether the storage account has a hierarchical namespace
+when it first uses the remote and saves it as the `hns` option in the
+config file. Set `--azureblob-hns` to override this.
+
+Blob tags (`x-ms-tags` metadata) aren't supported on these accounts.
+
 ### Performance
 
 When uploading large files, increasing the value of
@@ -57710,13 +58280,13 @@ be explicitly specified using exactly one of the `msi_object_id`,
 `msi_client_id`, or `msi_mi_res_id` parameters.
 
 If none of `msi_object_id`, `msi_client_id`, or `msi_mi_res_id` is
-set, this is is equivalent to using `env_auth`.
+set, this is equivalent to using `env_auth`.
 
 #### Federated Identity Credentials
 
 If these variables are set, rclone will authenticate with federated identity.
 
-- `tenant`: tenant ID of of the storage
+- `tenant`: tenant ID of the storage
 - `client_id`: client ID of the application the user will authenticate to storage
 - `msi_client_id`: managed identity client ID of the application the user will
   authenticate to
@@ -58828,13 +59398,13 @@ be explicitly specified using exactly one of the `msi_object_id`,
 `msi_client_id`, or `msi_mi_res_id` parameters.
 
 If none of `msi_object_id`, `msi_client_id`, or `msi_mi_res_id` is
-set, this is is equivalent to using `env_auth`.
+set, this is equivalent to using `env_auth`.
 
 #### Federated Identity Credentials
 
 If these variables are set, rclone will authenticate with federated identity.
 
-- `tenant`: tenant ID of of the storage
+- `tenant`: tenant ID of the storage
 - `client_id`: client ID of the application the user will authenticate to storage
 - `msi_client_id`: managed identity client ID of the application the user will
   authenticate to
@@ -59575,7 +60145,7 @@ OneDrive files. Take care to safeguard these credentials.
 If you do not have admin access to your organization's OneDrive for
 Business, you can still connect by manually providing the SharePoint
 tenant URL and drive ID. This works by overriding the base API URL
-from the standard Microsoft Graph endpoint to the SharePoint v2.0
+from the standard Microsoft Graph endpoint to the SharePoint API
 endpoint.
 
 #### Steps to manually obtain credentials
@@ -59589,6 +60159,13 @@ endpoint.
    ".driveAccessToken": "access_token={access_token}"
    ```
 
+   In some guest access scenarios SharePoint may also expose a matching
+   v2.1 URL and token pair:
+   ```json
+   ".driveUrlV21": "{tenant_url}/v2.1/drives/{drive_id}",
+   ".driveAccessTokenV21": "access_token={access_token}"
+   ```
+
 #### Rclone configuration
 
 Use the extracted values to configure your remote:
@@ -59600,6 +60177,14 @@ drive_id = {drive_id}
 tenant_url = {tenant_url}
 drive_type = business
 ```
+
+If you use a v2.1 token, set the matching SharePoint API version:
+
+```ini
+tenant_api_version = v2.1
+```
+
+If `tenant_api_version` is omitted, rclone defaults to `v2.0`.
 
 Since the exact expiry time cannot be determined from web traffic,
 set the expiry to a future date. Note that the token will eventually
@@ -59644,10 +60229,11 @@ This can be useful with `rclone mount` and [rclone rc vfs/refresh
 recursive=true](https://rclone.org/rc/#vfs-refresh)) to very quickly fill the mount with
 information about all the files.
 
-The API used for the recursive listing (`ListR`) only supports listing
-from the root of the drive. This will become increasingly inefficient
-the further away you get from the root as rclone will have to discard
-files outside of the directory you are using.
+Rclone asks for the delta listing of the directory being listed. Some
+drives only support delta listings from the root of the drive, in
+which case rclone lists the whole drive and discards the files outside
+of the directory you are using, which is increasingly inefficient the
+further away from the root you get.
 
 Some commands (like `rclone lsf -R`) will use `ListR` by default - you
 can turn this off with `--disable ListR` if you need to.
@@ -60487,11 +61073,6 @@ Or you can set the `no_versions` parameter to `true` and rclone will
 remove versions after operations which create new versions. This takes
 extra transactions so only enable it if you need it.
 
-**Note** At the time of writing Onedrive Personal creates versions
-(but not for setting the modification time) but the API for removing
-them returns "API not found" so cleanup and `no_versions` should not
-be used on Onedrive Personal.
-
 ### Disabling versioning
 
 Starting October 2018, users will no longer be able to
@@ -60545,8 +61126,6 @@ or `--dry-run` which is a great way to see what it would do.
 rclone cleanup --interactive remote:path/subdir # interactively remove all old version for path/subdir
 rclone cleanup remote:path/subdir               # unconditionally remove all old version for path/subdir
 ```
-
-**NB** Onedrive personal can't currently delete versions
 
 ## Troubleshooting
 
@@ -60650,6 +61229,27 @@ Shared with me files is not supported by rclone
    behaves like a normal folder/file.
     ![in_my_files](https://i.imgur.com/0S8H3li.png "Screenshot (My Files)")
     ![rclone_mount](https://i.imgur.com/2Iq66sW.png "Screenshot (rclone mount)")
+
+Listing such a shortcut may still fail with
+
+```text
+invalidRequest: The provided drive id appears to be malformed, or does not represent a valid drive.
+```
+
+as the drive it points to can't always be read with the drive ID the
+API supplies. `Personal Vault` is a shortcut of the same kind and
+fails to list in the same way, though it reports
+`invalidResourceId: ObjectHandle is Invalid`.
+
+A normal listing reports the error for that folder and carries on, so
+the rest of the drive is still listed, and excluding the folder (for
+example with `--exclude "/Personal Vault/**"`) avoids the error.
+
+A recursive listing with `--fast-list` stops at the first error, so
+listing the root of a drive which has one of these shortcuts in it
+will fail. Filters don't help here as the folder is listed by the
+backend before the filters are applied - use `--disable ListR` (or
+don't use `--fast-list`) on such a drive.
 
 ### Live Photos uploaded from iOS (small video clips in .heic files)
 
@@ -62510,7 +63110,7 @@ Before you can use rclone with Sia, you will need to have a running copy of
 network (e.g. a NAS). Please follow the [Get started](https://sia.tech/get-started)
 guide and install one.
 
-rclone interacts with Sia network by talking to the Sia daemon via [HTTP API](https://sia.tech/docs/)
+rclone interacts with Sia network by talking to the Sia daemon via [HTTP API](https://docs.sia.tech/)
 which is usually available on port *9980*. By default you will run the daemon
 locally on the same computer so it's safe to leave the API password blank
 (the API URL will be `http://127.0.0.1:9980` making external access impossible).
@@ -62856,7 +63456,7 @@ rclone sync --interactive /home/local/directory remote:container
 
 ### Configuration from an OpenStack credentials file
 
-An OpenStack credentials file typically looks something something
+An OpenStack credentials file typically looks something
 like this (without the comments)
 
 ```sh
@@ -63414,7 +64014,7 @@ Request" error rather than a more sensible error when the
 authentication fails for Swift.
 
 So this most likely means your username / password is wrong.  You can
-investigate further with the `--dump-bodies` flag.
+investigate further with the `--dump bodies` flag.
 
 This may also be caused by specifying the region when you shouldn't
 have (e.g. OVH).
@@ -66386,7 +66986,7 @@ correct, and support all features.
 The shell type auto-detection logic, described above, means that
 by default rclone will try to run a shell command the first time
 a new sftp remote is accessed. If you configure a sftp remote
-without a config file, e.g. an [on the fly](https://rclone.org/docs/#backend-path-to-dir])
+without a config file, e.g. an [on the fly](https://rclone.org/docs/#backend-path-to-dir)
 remote, rclone will have nowhere to store the result, and it
 will re-run the command on every access. To avoid this you should
 explicitly set the `shell_type` option to the correct value,
@@ -67386,7 +67986,7 @@ SFTP isn't supported under plan9 until [this
 issue](https://github.com/pkg/sftp/issues/156) is fixed.
 
 Note that since SFTP isn't HTTP based the following flags don't work
-with it: `--dump-headers`, `--dump-bodies`, `--dump-auth`.
+with it: `--dump headers`, `--dump bodies`, `--dump auth`.
 
 Note that `--timeout` and `--contimeout` are both supported.
 
@@ -68074,7 +68674,7 @@ Side by side comparison with more details:
 To make a new Storj configuration you need one of the following:
 
 - Access Grant that someone else shared with you.
-- [API Key](https://documentation.storj.io/getting-started/uploading-your-first-object/create-an-api-key)
+- [API Key](https://storj.dev/learn/concepts/access/access-grants/api-key)
   of a Storj project you are a member of.
 
 Here is an example of how to make a remote called `remote`.  First run:
@@ -68759,6 +69359,340 @@ remote.
 
 See [List of backends that do not support rclone about](https://rclone.org/overview/#optional-features)
 and [rclone about](https://rclone.org/commands/rclone_about/).
+
+# TelDrive
+
+TelDrive is a self-hosted file storage solution that uses Telegram
+channels as the underlying storage backend. Files are split into chunks,
+optionally encrypted, and uploaded as messages in a designated Telegram
+channel or group. The TelDrive API server indexes and manages the file
+metadata, providing a file-system-like interface over Telegram's storage.
+
+Paths are specified as `remote:path`.
+
+To use TelDrive, you need:
+
+- A running TelDrive server (self-hosted)
+- An API key for authentication
+
+## Filesystem behavior
+
+TelDrive uses case-sensitive names, matching the normal behavior of Linux
+filesystems. For example, `Photo.jpg` and `photo.jpg` are distinct files in
+the same directory.
+
+Directory listings are delivered page by page. Failed multipart uploads
+automatically reuse an exact-compatible open TelDrive upload session and skip
+parts that the server has already stored. Compatibility includes destination,
+exact-case name, size, MIME type, modification time, encryption mode, conflict
+policy, and BLAKE3 hash when the source provides one.
+
+Deleting a file or directory moves it to TelDrive trash. Use
+`rclone cleanup remote:` to permanently purge all top-level trashed entries
+under the configured remote root. Individual entries can be managed by ID:
+
+```console
+rclone backend trash-list remote:
+rclone backend restore remote: FILE_ID
+rclone backend purge remote: FILE_ID
+```
+
+## Configuration
+
+Here is an example of making a remote for TelDrive.
+
+First run:
+
+```console
+rclone config
+```
+
+This will guide you through an interactive setup process:
+
+```text
+No remotes found, make a new one?
+n) New remote
+d) Delete remote
+q) Quit config
+n/d/q> n
+
+Enter name for new remote.
+name> remote
+
+Option Storage.
+Type of storage to configure.
+Choose a number from below, or type in your own value.
+XX / TelDrive
+   \ (teldrive)
+Storage> XX
+
+Option api_host.
+URL of the TelDrive API server.
+Enter a value.
+api_host> https://teldrive.example.com
+
+Option api_key.
+API key for authentication.
+Enter a value.
+api_key> YOUR_API_KEY
+
+Configuration complete.
+Options:
+- type: teldrive
+- api_host: https://teldrive.example.com
+- api_key: XXXXXXXXXXX
+Keep this "remote" remote?
+y) Yes this is OK (default)
+e) Edit this remote
+d) Delete this remote
+y/e/d> y
+```
+
+<!-- autogenerated options start - DO NOT EDIT - instead edit fs.RegInfo in backend/teldrive/teldrive.go and run make backenddocs to verify --> <!-- markdownlint-disable-line line-length -->
+### Standard options
+
+Here are the Standard options specific to teldrive (Tel Drive).
+
+#### --teldrive-api-key
+
+API key for authentication with the TelDrive server.
+
+This is the API token used to authenticate requests. Obtain it from
+your TelDrive dashboard or server admin.
+
+
+Properties:
+
+- Config:      api_key
+- Env Var:     RCLONE_TELDRIVE_API_KEY
+- Type:        string
+- Required:    false
+
+#### --teldrive-api-host
+
+URL of the TelDrive API server.
+
+The base URL for the TelDrive API endpoint (e.g. https://teldrive.example.com).
+This is required for all operations.
+
+
+Properties:
+
+- Config:      api_host
+- Env Var:     RCLONE_TELDRIVE_API_HOST
+- Type:        string
+- Required:    false
+
+#### --teldrive-chunk-size
+
+Upload chunk size.
+
+Files larger than this will be uploaded in multiple chunks. The chunk size
+is automatically aligned to the nearest 16 MiB multiple (the BLAKE3 tree
+hash block size) for optimal hashing performance.
+
+Larger chunk sizes reduce the number of API calls but use more memory
+during uploads (one chunk is buffered per concurrent upload stream).
+Minimum: 64 MiB, Maximum: 2000 MiB.
+
+
+Properties:
+
+- Config:      chunk_size
+- Env Var:     RCLONE_TELDRIVE_CHUNK_SIZE
+- Type:        SizeSuffix
+- Default:     512Mi
+
+#### --teldrive-link-password
+
+Password to set on created public links.
+
+When set, all public links created via the link command will require
+this password to access. If not set, links will be publicly accessible.
+
+
+Properties:
+
+- Config:      link_password
+- Env Var:     RCLONE_TELDRIVE_LINK_PASSWORD
+- Type:        string
+- Required:    false
+
+#### --teldrive-page-size
+
+Number of items to return per page when listing files.
+
+Controls the page size for directory listing API calls. Larger values
+reduce the number of API requests needed for directories with many files,
+but may increase response time and memory usage for each request.
+
+
+Properties:
+
+- Config:      page_size
+- Env Var:     RCLONE_TELDRIVE_PAGE_SIZE
+- Type:        int
+- Default:     200
+
+#### --teldrive-upload-host
+
+Optional alternative URL for upload API calls.
+
+If set, upload chunk requests will be sent to this host instead of
+the main api_host. Useful for load-balancing or directing upload
+traffic to a different server or CDN endpoint.
+
+
+Properties:
+
+- Config:      upload_host
+- Env Var:     RCLONE_TELDRIVE_UPLOAD_HOST
+- Type:        string
+- Required:    false
+
+#### --teldrive-encrypt-files
+
+Enable native TelDrive encryption for stored files.
+
+When enabled, files will be encrypted at rest using TelDrive's
+built-in encryption before being sent to Telegram. The encryption
+keys are managed by the TelDrive server.
+
+
+Properties:
+
+- Config:      encrypt_files
+- Env Var:     RCLONE_TELDRIVE_ENCRYPT_FILES
+- Type:        bool
+- Default:     false
+
+#### --teldrive-hash-enabled
+
+Enable BLAKE3 tree hashing for file integrity verification.
+
+Files are split into 16 MiB blocks, each hashed with BLAKE3, then
+the block hashes are combined into a final tree hash. This allows
+rclone to verify upload integrity and detect modifications.
+
+Disable only if the server does not support this hash type.
+
+
+Properties:
+
+- Config:      hash_enabled
+- Env Var:     RCLONE_TELDRIVE_HASH_ENABLED
+- Type:        bool
+- Default:     true
+
+### Advanced options
+
+Here are the Advanced options specific to teldrive (Tel Drive).
+
+#### --teldrive-upload-concurrency
+
+Number of chunks to upload in parallel per file.
+
+Higher concurrency can speed up large file uploads at the cost of
+more memory usage and potential rate-limiting. Each concurrent upload
+buffers one chunk in memory.
+
+
+Properties:
+
+- Config:      upload_concurrency
+- Env Var:     RCLONE_TELDRIVE_UPLOAD_CONCURRENCY
+- Type:        int
+- Default:     4
+
+#### --teldrive-encoding
+
+The encoding for the backend.
+
+See the [encoding section in the overview](https://rclone.org/overview/#encoding) for more info.
+
+Properties:
+
+- Config:      encoding
+- Env Var:     RCLONE_TELDRIVE_ENCODING
+- Type:        Encoding
+- Default:     Slash,BackSlash,Del,Ctl,LeftSpace,RightSpace,InvalidUtf8,Dot
+
+#### --teldrive-description
+
+Description of the remote.
+
+Properties:
+
+- Config:      description
+- Env Var:     RCLONE_TELDRIVE_DESCRIPTION
+- Type:        string
+- Required:    false
+
+## Backend commands
+
+Here are the commands specific to the teldrive backend.
+
+Run them with:
+
+```console
+rclone backend COMMAND remote:
+```
+
+The help below will explain what arguments each command takes.
+
+See the [backend](https://rclone.org/commands/rclone_backend/) command for more
+info on how to pass options and arguments.
+
+These can be run on a running backend using the rc command
+[backend/command](https://rclone.org/rc/#backend-command).
+
+### trash-list
+
+List top-level trashed files and directories.
+
+```console
+rclone backend trash-list remote: [options] [<arguments>+]
+```
+
+Lists top-level trashed entries reachable from the configured remote root.
+
+The result is returned as TelDrive file metadata including each entry ID.
+
+### restore
+
+Restore a trashed file or directory by ID.
+
+```console
+rclone backend restore remote: [options] [<arguments>+]
+```
+
+Restores one trashed file or directory.
+
+Usage:
+
+    rclone backend restore teldrive: FILE_ID
+
+### purge
+
+Permanently purge a trashed file or directory by ID.
+
+```console
+rclone backend purge remote: [options] [<arguments>+]
+```
+
+Schedules permanent deletion of one trashed file or directory and its subtree.
+
+Usage:
+
+    rclone backend purge teldrive: FILE_ID
+
+<!-- autogenerated options stop -->
+
+## Limitations
+
+Invalid UTF-8 bytes will be replaced as they can't be used in JSON
+strings. Filenames containing certain special characters may be encoded
+as configured by the `--teldrive-encoding` option.
 
 # Uloz.to
 
@@ -69482,7 +70416,9 @@ Likewise plain WebDAV does not support hashes, however when used with
 Fastmail Files, ownCloud or Nextcloud rclone will support SHA1 and MD5 hashes.
 Depending on the exact version of ownCloud or Nextcloud hashes may
 appear on all objects, or only on objects which had a hash uploaded
-with them.
+with them. With Nextcloud, rclone asks the server to calculate the SHA1
+of uploads which had no hash to send, such as streamed uploads, and
+after setting the modification time, which discards the stored hash.
 
 <!-- autogenerated options start - DO NOT EDIT - instead edit fs.RegInfo in backend/webdav/webdav.go and run make backenddocs to verify --> <!-- markdownlint-disable-line line-length -->
 ### Standard options
@@ -70050,6 +70986,16 @@ are replaced.
 
 Invalid UTF-8 bytes will also be [replaced](https://rclone.org/overview/#invalid-utf8),
 as they can't be used in JSON strings.
+
+### Application folder
+
+If you registered your own OAuth application with Yandex and only granted
+it the "Application Folder" permission (`cloud_api:disk.app_folder`)
+instead of full disk access, then you must set the `app_folder` option to
+`true`. Yandex Disk requires paths to be addressed with an `app:/` prefix
+instead of the usual `disk:/` prefix when using this restricted scope, and
+rclone will return a 403 Forbidden error on every request if this option
+isn't set correctly for the token in use.
 
 <!-- autogenerated options start - DO NOT EDIT - instead edit fs.RegInfo in backend/yandex/yandex.go and run make backenddocs to verify --> <!-- markdownlint-disable-line line-length -->
 ### Standard options
@@ -70871,6 +71817,9 @@ $ rclone -L ls /tmp/a
         6 b/one
 ```
 
+Symlinks which point to a parent directory would loop forever, so
+rclone reports them as errors and skips them.
+
 #### --local-links, --links, -l
 
 Normally rclone will ignore symlinks or junction points (which behave
@@ -70926,6 +71875,9 @@ $ tree /tmp/b
 ├── file1 -> ./file4
 └── file2 -> /home/user/file3
 ```
+
+A `.rclonelink` file whose contents are too long to be a path (more
+than 128 KiB) is refused rather than turned into a symlink.
 
 However, if copied back without '-l'
 
@@ -71482,6 +72434,344 @@ Options:
 
 # Changelog
 
+## v1.75.2 - 2026-10-09
+
+[See commits](https://github.com/rclone/rclone/compare/v1.75.1...v1.75.2)
+
+- Security
+  - b2: Fix account token and SSE-C key leaking on redirects from `--b2-download-url` GHSA-gpw7-77cq-9f72 CVE-PENDING (Nick Craig-Wood)
+  - build
+    - Fix multiple CVEs by upgrading to go1.26.9 (Nick Craig-Wood)
+      - CVE-2026-97032: net/http: HTTP/2 server crash due to HPACK encoder race
+      - CVE-2026-78659: net/http: HTTP/2 server memory exhaustion due to Trailer headers
+      - CVE-2026-97031: crypto/tls: reject malformed ECH outer extension references
+      - CVE-2026-94444: cmd/go: checksum bypass for golang.org/fips140
+      - CVE-2026-94447: cmd/go: checksum database bypass for golang.org/toolchain
+      - CVE-2026-94448: html/template: reset context tracking on consecutive template expressions
+      - CVE-2026-97030: html/template: recognize |yield| as regexp preceder keyword
+      - CVE-2026-94440: net/textproto, mime/multipart: memory limit bypass when parsing MIME headers
+      - CVE-2026-56866: net/http: HTTP/1 client connection desynchronization after CONNECT rejection
+      - CVE-2026-94439: net/http: HTTP/1 server connection desynchronization after 2xx CONNECT response
+      - CVE-2026-78669: net/http: excessive CPU consumption from repeated initial window changes
+      - CVE-2026-78660: net/http: HTTP/2 transport accepts malformed framing-related headers
+      - CVE-2026-56857: os: Root.Mkdir(All) can follow junctions out of the root on Windows
+      - CVE-2026-78667: net/http: lack of limit on size of parsed Range headers
+      - CVE-2026-78663: net/http: double flow control refund on HTTP/2 server streams
+    - Update golang.org/x/net to v0.60.0 to fix multiple CVEs (Nick Craig-Wood)
+      - CVE-2026-78659: net/http: HTTP/2 server memory exhaustion due to Trailer headers
+      - CVE-2026-78669: net/http: excessive CPU consumption from repeated initial window changes
+      - CVE-2026-78663: net/http: double flow control refund on HTTP/2 server streams
+      - CVE-2026-97032: net/http: HTTP/2 server crash due to HPACK encoder race
+    - Update google.golang.org/grpc to fix CVE-2026-84445 (dependabot[bot])
+      - CVE-2026-84445: xds: server panic on a request missing both :authority and Host headers
+  - fshttp: Drop `--header` values over HTTP after HTTPS downgrade GHSA-rrwf-2qr6-p832 CVE-PENDING (Nick Craig-Wood)
+  - http: Stop a path starting with // moving the remote to another host GHSA-xqmq-v4wj-rw5m CVE-PENDING (Nick Craig-Wood)
+  - lib/http: Require authentication for OPTIONS requests GHSA-gj73-fh6v-92fj CVE-PENDING (Nick Craig-Wood)
+  - local: Fix .rclonelink names escaping the root with `--links` GHSA-55qp-jrwr-x827 CVE-PENDING (Nick Craig-Wood)
+  - netstorage
+    - Stop a path starting with // moving the remote to another host GHSA-xqmq-v4wj-rw5m CVE-PENDING (Nick Craig-Wood)
+    - Stop a listing resume token moving signed requests to another host GHSA-xqmq-v4wj-rw5m CVE-PENDING (Nick Craig-Wood)
+  - pcloud
+    - Fix OAuth config accepting callbacks without state GHSA-hvpr-p4pv-4f46 CVE-PENDING (Nick Craig-Wood)
+    - Only accept pCloud hosts from the hostname in the OAuth callback GHSA-hvpr-p4pv-4f46 (Nick Craig-Wood)
+  - selfupdate
+    - Fix hash check trusting unsigned data in the signed SHA256SUMS GHSA-w33h-3qgq-8mv8 CVE-PENDING (Nick Craig-Wood)
+    - Fix release verification instructions trusting unsigned hashes GHSA-w33h-3qgq-8mv8 (Nick Craig-Wood)
+  - serve nfs: Fix path traversal by refusing unsafe file names in the VFS GHSA-44pm-2q5p-fm63 CVE-PENDING (Nick Craig-Wood)
+  - serve s3
+    - Fix presigned URL being turned into a copy of any object GHSA-w3h7-jxxq-vfrp CVE-PENDING (Nick Craig-Wood)
+    - Stop auth proxy users listing or using each other's multipart uploads and metadata GHSA-35g6-9fjv-rmx5 CVE-PENDING (Nick Craig-Wood)
+    - Fix multipart buffer limits being bypassed by overflowing part sizes GHSA-qjw8-8hmp-c3m6 (Nick Craig-Wood)
+    - Add `--multipart-max-uploads` to limit uploads in progress (Nick Craig-Wood)
+    - Add `--multipart-streaming-buffer-total` to limit memory across uploads (Nick Craig-Wood)
+    - Add `--metadata-max-objects` to limit the metadata kept in memory (Nick Craig-Wood)
+  - serve webdav: Fix path traversal above the served directory GHSA-44pm-2q5p-fm63 CVE-PENDING (Nick Craig-Wood)
+  - webdav: Fix headers option leaking to other hosts on redirect GHSA-3rqf-7h69-gg5v CVE-PENDING (Nick Craig-Wood)
+- Bug Fixes
+  - accounting
+    - Stop averaging when the last check finishes (Kunpeng Xie)
+    - Keep speed averaging active when transfers overlap (kaii9)
+  - dedupe: Fix rename mode giving up after 100 names and make it faster (Nick Craig-Wood)
+  - doc fixes (Dhevenddra K G, enkvadrat, GhostCoder6969, James Truitt, maximilize, n4n5, Nick Craig-Wood, PSR94, Rohit Behera, shaurya, subomi)
+  - docker: Fix files uploaded with the wrong mime type (hsdfat)
+  - fs
+    - Fix about showing a negative total when a quota reaches the int64 maximum (youdie006)
+    - Fix bandwidth limits below 1 KiB being multiplied by 1024 (Roland)
+    - Fix `--bwlimit` timetables written out of order using the wrong limit (Rohit Behera)
+    - Make BwTimetable.Set replace the timetable instead of appending to it (youdie006)
+    - Retry "network is unreachable" and "network is down" errors (nielash)
+  - fserrors: Fix out of space detection on Windows (ferrumclaudepilgrim)
+  - lib/rest: Limit the size of HTTP response bodies read into memory (Nick Craig-Wood)
+  - log: Fix race when adding a log output while logging (Nick Craig-Wood)
+  - oauthutil: Fix Renew.Shutdown nil timer panic and race (TastyHeadphones)
+  - operations
+    - Stop `--copy-dest` replacing files with `--immutable` (phatlc)
+    - Fix ignored error in rcat probe reads (Wang Chencheng)
+    - Fix hang when deleting files and a fatal error occurs (Nick Craig-Wood)
+    - Fix hang and lost context when moving a directory file by file (Nick Craig-Wood)
+    - Don't sleep for a Retry-After error when the transfer is cancelled (Nick Craig-Wood)
+  - rc
+    - Make job/status and job/list require authentication (Nick Craig-Wood)
+    - Fix rc API accepting an out of range number and overflowing 64 bits (KBS)
+    - Reject out of range integer parameters instead of truncating them (Nick Craig-Wood)
+    - Fix large numeric parameters being rejected on 32 bit builds (Jeremy Schoemaker)
+  - selfupdate: Fix `--version X.Y` depending on ./ in the download site links (Nick Craig-Wood)
+  - serve
+    - Fix `--auth-proxy` stopping VFS cache uploads after 5 minutes (Nick Craig-Wood)
+    - Fix `--auth-proxy` backends never being shut down after simultaneous logins (Nick Craig-Wood)
+  - serve dlna: Log unescaped paths (phatlc)
+  - serve docker: Fix volume path being lost when the plugin restarts (phatlc)
+  - serve ftp
+    - Fix transfers failing after 5 minutes with `--auth-proxy` (Nick Craig-Wood)
+    - Fix VFS leak when the server fails to start (Nick Craig-Wood)
+  - serve http
+    - Fix downloads failing after 5 minutes with `--auth-proxy` (Nick Craig-Wood)
+    - Escape filename in zip download Content-Disposition header (Harsh Raj Singhania)
+  - serve restic
+    - Fix repositories named data (kaii9)
+    - Prevent concurrent append-only overwrites (Vasek Sraier)
+  - serve s3
+    - Apply the multipart upload limits and `--metadata-max-objects` to each user separately (Nick Craig-Wood)
+    - Stream in-order multipart parts without buffering them (Nick Craig-Wood)
+    - Start the upload to the backend on the first multipart part (Nick Craig-Wood)
+    - Don't buffer re-uploads of multipart parts already streamed (Nick Craig-Wood)
+    - Count buffered multipart parts in whole memory pages (Nick Craig-Wood)
+    - Time out multipart parts waiting for buffer space (Nick Craig-Wood)
+    - Limit the memory requests can use (Nick Craig-Wood)
+    - Forget expired multipart uploads completely (Nick Craig-Wood)
+    - Forget the metadata of deleted objects (Nick Craig-Wood)
+    - List objects lazily so paging a deep hierarchy is fast (Nick Craig-Wood)
+    - Fix multipart upload corruption if the backend write of an early part fails (Nick Craig-Wood)
+    - Fix uploads failing when the auth proxy expires the user's backend (Nick Craig-Wood)
+    - Fix stale metadata being returned for objects changed elsewhere (Nick Craig-Wood)
+    - Fix `--etag-hash auto` crashing or using the wrong hash with `--auth-proxy` (Nick Craig-Wood)
+    - Fix CopyObject of a missing object not returning NoSuchKey (Nick Craig-Wood)
+    - Fix log messages with bad format strings (Nick Craig-Wood)
+    - Document memory use and bring the docs up to date (Nick Craig-Wood)
+  - serve webdav
+    - Fix transfers failing after 5 minutes with `--auth-proxy` (Nick Craig-Wood)
+    - Fix crash when the server fails to start (Nick Craig-Wood)
+    - Escape filename in zip download Content-Disposition header (Harsh Raj Singhania)
+  - vfscache: Fix hang when the cache cleaner is disabled (ferrumclaudepilgrim)
+- Mount
+  - Fix `--daemon` failing when `--rc` is enabled (somaz)
+  - Ignore com.apple.* xattrs on the macOS FSKit backend (Eugene)
+- VFS
+  - Fix reads returning zeros after a file changes during handle caching (Neil Cawse)
+  - Stop setting a file's modtime from discarding its cached data (Neil Cawse)
+  - Fix crash reading the metadata of a file which is being written (Nick Craig-Wood)
+  - Fix a VFS being reused while it is being shut down (Nick Craig-Wood)
+  - Fix AddVirtual ignoring isDir (phatlc)
+  - Stop `--links` objects called "...rclonelink" appearing as ".." in directory listings (Nick Craig-Wood)
+- Local
+  - Fix directories named *.rclonelink being treated as links with `--links` (Nick Craig-Wood)
+- Archive
+  - Fix corrupt listings when listing a zip directory more than once (Nick Craig-Wood)
+  - Fix zip file entries named for a directory causing confusion (Nick Craig-Wood)
+  - Fix listing entries with a leading slash as if they were in the root (Nick Craig-Wood)
+  - Fix crash when creating archive to stdout (Vladimir Babin)
+  - Fix a squashfs path to a single file listing its whole directory (Nick Craig-Wood)
+- Azure Blob
+  - Use the released Azure SDK for Apache Arrow listing (Nick Craig-Wood)
+- Box
+  - Fix log messages with bad format strings (Nick Craig-Wood)
+- Chunker
+  - Fix panic listing a directory after an interrupted upload with meta_format none (Nick Craig-Wood)
+- Compress
+  - Fix crash on ranged reads when gzip metadata is corrupted (Acts1631)
+- Drime
+  - Fix server-side copy over an existing file leaving a "name (1)" copy (Nick Craig-Wood)
+  - Fix deleted files and directories still being listed with hard_delete (Nick Craig-Wood)
+- Drive
+  - Document the Branding step needed to publish your own client_id (Sanjay Kanth A)
+- Dropbox
+  - Fix shared folder mount for roots nested more than one level deep (phatlc)
+  - Match shared-folder and received-file names case-insensitively (phatlc)
+- Filescom
+  - Fix corrupted uploads after a retried upload error (Nick Craig-Wood)
+  - Document that names with / or \ in can't be stored (Nick Craig-Wood)
+- HTTP
+  - Fix crash when the server fails to start (Nick Craig-Wood)
+- Iclouddrive
+  - Fix potential crash looking up items (Nick Craig-Wood)
+- Imagekit
+  - Fix potential crash in rmdir and purge (Nick Craig-Wood)
+- Internxt
+  - Fix lookups of files starting with a dot and dropped uploads (jzunigax2)
+  - Fix sync with `--backup-dir` or `--suffix` deleting the backed up file (Nick Craig-Wood)
+  - Fix server-side moves failing with "Not Found" or "already exists" (Nick Craig-Wood)
+  - Fix "directory not empty" and stale directories after moves and deletes (Nick Craig-Wood)
+  - Fix server-side directory move failing after a gateway timeout (Nick Craig-Wood)
+- Onedrive
+  - Update docs for versions, links and time precision on personal accounts (Nick Craig-Wood)
+  - Document that shared with me shortcuts may fail to list on personal (Nick Craig-Wood)
+  - Update `--onedrive-hard-delete` docs to mention personal account support (foecmke)
+- Oracleobjectstorage
+  - Fix SSE-C server-side copies (tomaszni)
+  - Upload empty streams without multipart (tomaszni)
+- Pixeldrain
+  - Fix corrupted uploads after a retried upload error (Nick Craig-Wood)
+- Premiumizeme
+  - Fix uploading files with ";" in their names (Nick Craig-Wood)
+- S3
+  - Disable signing Accept-Encoding for Ceph and Linode (Aditya)
+  - Fix version-at listings with URL encoded keys (jxj)
+  - Fix storage class missing from `--s3-versions` listings (Dirk Petersen)
+- Seafile
+  - Fix corrupted uploads after a retried upload error (Nick Craig-Wood)
+- SFTP
+  - Fix failed uploads leaving disk space in use on the server (Nick Craig-Wood)
+- Shade
+  - Fix potential crash in directory move (Nick Craig-Wood)
+- Smb
+  - Save the user name in the config even if it matches the current user (phatlc)
+- WebDAV
+  - Fix duplicated listing entries after retried PROPFIND (ZRHann)
+  - Fix "XML syntax error" on paths which don't exist with ownCloud 10.16 (Nick Craig-Wood)
+
+## v1.75.1 - 2026-09-04
+
+[See commits](https://github.com/rclone/rclone/compare/v1.75.0...v1.75.1)
+
+- Security
+  - archive
+    - Fix zip slip path traversal in untrusted zip files GHSA-66hp-wgxq-6f5q CVE-2026-88014 (Nick Craig-Wood)
+    - Hide any archive entry which escapes the directory being listed GHSA-66hp-wgxq-6f5q (Nick Craig-Wood)
+    - Reject unsafe entry names when mounting squashfs images GHSA-66hp-wgxq-6f5q (Nick Craig-Wood)
+    - Fix zip subdirectory root matching sibling directories GHSA-66hp-wgxq-6f5q (Nick Craig-Wood)
+    - Fix zip entry named "." hiding every other file GHSA-66hp-wgxq-6f5q (Nick Craig-Wood)
+    - Fix "directory not found" for archive paths containing "./" or "//" GHSA-66hp-wgxq-6f5q (Nick Craig-Wood)
+  - build
+    - Fix multiple CVEs by upgrading to go1.26.6 (Nick Craig-Wood)
+      - CVE-2026-56860: net/url: quadratic complexity in resolvePath
+      - CVE-2026-56858: html/template: JavaScript regexp context tracking
+      - CVE-2026-56862: crypto/tls: limit handshake messages accepted post-handshake
+      - CVE-2026-56853: net/http: apply ReadHeaderTimeout to unencrypted HTTP/2 check
+      - CVE-2026-56859: encoding/xml: recursion depth guard during decode
+      - CVE-2026-33818: encoding/asn1: enforce maximum recursion depth
+      - CVE-2026-46600: net: panic parsing an invalid SVCB or HTTPS RR in dnsmessage
+      - CVE-2026-39821: net/http: reject ASCII-only Punycode-encoded labels in idna
+    - Update golang.org/x/crypto to v0.56.0 to fix multiple CVEs (Nick Craig-Wood)
+      - CVE-2026-56854: ssh: source-address critical option not enforced for non-public-key auth callbacks
+      - CVE-2026-78662: ssh: a malicious peer could flood an undecided channel's incoming requests, deadlocking the connection
+      - CVE-2026-56855: ssh: a malicious peer could send crafted messages on an established channel, deadlocking the connection
+    - Update golang.org/x/image to v0.45.0 to fix CVE-2026-46603 (Nick Craig-Wood)
+      - CVE-2026-46603: excessive memory allocation during VP8L decoding
+  - fs: Confine directory listing entries that escape the root GHSA-3vxh-3pcx-9m8q GHSA-38xv-hf3p-h7mq CVE-2026-88046 (Nick Craig-Wood)
+  - fshttp: Don't send `--header` values to other hosts on redirect GHSA-486v-q2wf-fp2r CVE-2026-88013 (Nick Craig-Wood)
+  - http: Don't leak configured headers to other hosts or over plaintext on redirect GHSA-486v-q2wf-fp2r CVE-2026-88013 (Nick Craig-Wood)
+  - lib/rest: Check HTTPS downgrades against the original request on redirect GHSA-486v-q2wf-fp2r CVE-2026-88013 (Nick Craig-Wood)
+  - local
+    - Fix dir metadata escaping the root through a planted symlink GHSA-f8g7-2xjc-7mfh CVE-2026-88016 (Nick Craig-Wood)
+    - Fix btime escaping the root via a planted symlink GHSA-f8g7-2xjc-7mfh CVE-2026-88016 (Nick Craig-Wood)
+    - Fix panic on Range request past the end of a symlink GHSA-p6m2-r3w9-mpxw CVE-2026-88015 (Nick Craig-Wood)
+  - serve docker
+    - Reject volume names that escape the base directory GHSA-p6vx-hf7p-98j6 (Nick Craig-Wood)
+    - Reject volume names resolving to the base directory itself GHSA-p6vx-hf7p-98j6 (Nick Craig-Wood)
+    - Re-derive volume mountpoint from name when restoring state GHSA-p6vx-hf7p-98j6 (Nick Craig-Wood)
+  - serve ftp: Fix auth-proxy sessions sharing credentials by username GHSA-c476-6w5q-jw77 CVE-2026-88017 (Nick Craig-Wood)
+  - serve s3
+    - Fix memory exhaustion from client-declared multipart part size GHSA-2p48-j3qc-rx9f CVE-2026-88045 (Nick Craig-Wood)
+    - Reject bogus multipart part sizes in the reorder buffer GHSA-2p48-j3qc-rx9f (Nick Craig-Wood)
+    - Fix auth proxy accepting any request signed with an empty secret GHSA-xwwr-4h3p-r22c CVE-2026-88018 (Nick Craig-Wood)
+      - **NB** the auth proxy protocol for `serve s3` has changed - the proxy program is now given the access key ID as `user` and must return the secret as `_secret_access_key`
+    - Fix each server accepting the `--auth-key` credentials of all the others (Nick Craig-Wood)
+    - Fix misleading anonymous access log when using an auth proxy via rc GHSA-p569-5gjg-9cmj CVE-2026-88044 (Nick Craig-Wood)
+  - serve sftp: Fix auth proxy configured via rc being silently ignored GHSA-p569-5gjg-9cmj CVE-2026-88044 (Nick Craig-Wood)
+- Bug Fixes
+  - accounting
+    - Fix memory leak on long-running rcd (nielash)
+    - Fix memory leak from stats groups on long-running rcd (nielash)
+    - Fix bwlimit burst overflow (Rayan Salhab)
+  - bisync
+    - Fix memory leak when running via the rc (nielash)
+    - Fix failed transfers of empty files being recorded as synced (Nick Craig-Wood)
+  - build: Make go1.26 the minimum required version as needed by golang.org/x/crypto v0.56.0 (Nick Craig-Wood)
+  - config: Redact env var config values in logs (Pastalikek65)
+  - doc fixes (Anton Karpov, CAOShurong, Dean Chen, Nick Craig-Wood, Recoordinate, Rodrigo Rodrigues, Shantanav Mukherjee, shaurya)
+  - lib/batcher: Prevent commits racing shutdown (Loi Nguyen)
+  - lib/transform: Fix panic in `truncate_keep_extension` (VXNCXNX)
+  - multipart: Fix chunked uploads storing truncated objects when the source ends early (Nick Craig-Wood)
+  - operations: Fix silent truncation of streaming uploads whose source ends early (Nick Craig-Wood)
+  - serve
+    - Fix VFS instance leaks on server startup failures and shutdown (Hakan İSMAİL)
+    - Pass the client IP address to the auth proxy (am-at-enrollvb)
+  - serve http: Prevent scrolling to the top on page reload (Sune Mølgaard)
+  - serve nfs: Fix EIO when creating symlinks with `--vfs-links` (SillyZir)
+  - serve s3
+    - Fix failed uploads deleting or corrupting the object at the key (Nick Craig-Wood)
+    - Fix crash when a multipart upload is aborted while a part is uploading (Nick Craig-Wood)
+    - Fix modtime not being set when only mtime metadata is supplied on PUT (Nick Craig-Wood)
+    - Upload all multipart uploads via the VFS so they obey `--bwlimit` and show in stats (Nick Craig-Wood)
+    - Reserve the `.rclone_temp_` prefix for temporary objects (Nick Craig-Wood)
+    - Clean up abandoned multipart uploads after `--multipart-expiry` (Nick Craig-Wood)
+  - vfscache
+    - Fix reader deadlock when the item size drops below the read offset (Dave)
+    - Fix log message growing without bound on repeated write errors (Vijay Misal)
+  - walk: Stop directory traversal when the context is cancelled (Rahman Yilmaz)
+- VFS
+  - Synchronize poll updates with shutdown (Loi Nguyen)
+  - Make poll shutdown lifecycle deterministic (Loi Nguyen)
+- Crypt
+  - Fix hash mismatches with `no_data_encryption` on backends which check upload hashes (Nick Craig-Wood)
+  - Fix directory names which look like versioned file names (TowyTowy)
+  - Warn about directories with legacy version-like encrypted names (Nick Craig-Wood)
+- Azure Blob
+  - Fix Entra ID server-side copy source authentication (Edward Klesel)
+  - Fix spurious vfs cache corruption errors during chunked reads (Nick Craig-Wood)
+- Azurefiles
+  - Fix zero padded files being created when the source ends early (Nick Craig-Wood)
+- Box
+  - Fix truncated files being uploaded successfully when the source ends early (Rohit Behera)
+- Compress
+  - Fix corrupted objects being created when the source ends early (Nick Craig-Wood)
+- Drive
+  - Don't list trashed files when removing a directory into the trash (alliasgher)
+- Dropbox
+  - Preserve Paper export paths on lookup (Loi Nguyen)
+  - Fix context cancellation (e.g. `--max-duration` limit) not stopping in-flight requests (debaditya)
+  - Fix chunked uploads of truncated files never finishing (Nick Craig-Wood)
+  - Don't retry chunked upload requests when the upload has been cancelled (Nick Craig-Wood)
+  - Decode received shared-file names (Sanjay Kanth A)
+  - Fix ChangeNotify when the root's case differs from Dropbox's (Loi Nguyen)
+- Filelu
+  - Fix truncated files being uploaded successfully when the source ends early (Nick Craig-Wood)
+  - Fix duplicate root path during multipart folder creation (kingston125)
+- Huaweidrive
+  - Fix truncated files being uploaded successfully when the source ends early (Rohit Behera)
+- Iclouddrive
+  - Fix uploads into an app container failing with 412 (Christian De Santis)
+- Internetarchive
+  - Fix corrupted files being created when the source ends early (Nick Craig-Wood)
+- Internxt
+  - Persist rotated token returned by the user info call (0rangeSeaW0lf)
+- Onedrive
+  - Fix 403 Forbidden for configuration personal onedrive (machsix)
+  - Fall back to manual drive ID entry when drive listing fails (SillyZir)
+  - Don't retry multipart upload chunk on 404 (upload session not found) (water)
+- Overview
+  - Fix "internal error: no overview data found" on 32 bit architectures (Nick Craig-Wood)
+- Pikpak
+  - Fix truncated files being created when the source ends early (Nick Craig-Wood)
+  - Fix truncated single part uploads reported as ok when source ends early (Nick Craig-Wood)
+- Protondrive
+  - Fix files uploaded with v1.75.0 not being readable in the Proton apps (Nick Craig-Wood)
+  - Fix corrupted uploads after a retried upload error (Nick Craig-Wood)
+- Quatrix
+  - Fix chunk upload retries and fix memory leak (Nick Craig-Wood)
+- S3
+  - Update Mega endpoints (Nick Craig-Wood)
+  - Treat UploadPart success without ETag as retryable error (CAOShurong)
+  - Fix server side copy failing with `--s3-no-head-object` (Anatoly Tarnavsky)
+- Sia
+  - Fix corrupted files being created when the source ends early (Nick Craig-Wood)
+- Smb
+  - Reuse the upload connection for SetModTime (alliasgher)
+- WebDAV
+  - Fix SetModTime failing and hashes missing on Nextcloud (Nick Craig-Wood)
+- Yandex
+  - Fix truncated files being uploaded successfully when the source ends early (Rohit Behera)
+
 ## v1.75.0 - 2026-07-31
 
 [See commits](https://github.com/rclone/rclone/compare/v1.74.0...v1.75.0)
@@ -71490,11 +72780,11 @@ Options:
   - [Scality](https://rclone.org/s3/#scality) (RING / ARTESCA)
   - [Zero Services](https://rclone.org/s3/#zero-z3) (ZERO-Z3)
 - Security
-  - archive: Don't crash on malformed squashfs images GHSA-6jcg-q3wp-x2f4 CVE-PENDING (Nick Craig-Wood)
-  - ftp: Fix ftp command injection when encoding doesn't include CRLF GHSA-8c48-q9wj-3w37 CVE-PENDING (Nick Craig-Wood)
+  - archive: Don't crash on malformed squashfs images GHSA-6jcg-q3wp-x2f4 (Nick Craig-Wood)
+  - ftp: Fix ftp command injection when encoding doesn't include CRLF GHSA-8c48-q9wj-3w37 CVE-2026-71311 (Nick Craig-Wood)
   - lib/http: Use TLS on all `--addr` listeners when `--cert` and `--key` are set GHSA-mfvx-7rcj-9m5g (Nick Craig-Wood)
-  - lib/proxy: Fix unbounded HTTP CONNECT headers causing OOM GHSA-xhf4-832v-7xcr CVE-PENDING (Nick Craig-Wood)
-  - local: Stop source file names escaping the destination directory GHSA-7p4m-qxvv-g567 CVE-PENDING (Nick Craig-Wood)
+  - lib/proxy: Fix unbounded HTTP CONNECT headers causing OOM GHSA-xhf4-832v-7xcr CVE-2026-71310 (Nick Craig-Wood)
+  - local: Stop source file names escaping the destination directory GHSA-7p4m-qxvv-g567 CVE-2026-71313 (Nick Craig-Wood)
   - rc
     - Don't expose pprof debug handlers on an unauthenticated server GHSA-mfvx-7rcj-9m5g CVE-PENDING (Nick Craig-Wood)
     - Require authentication to list the remotes with `--rc-serve` GHSA-mfvx-7rcj-9m5g (Nick Craig-Wood)
@@ -71503,9 +72793,9 @@ Options:
     - Fix redirect credential leaks, reject HTTPS->HTTP and strip secrets GHSA-8mxv-9xhp-86h4 (Nick Craig-Wood)
     - Strip S3 Express session token on cross-host redirects GHSA-8mxv-9xhp-86h4 (Nick Craig-Wood)
   - serve ftp: Use constant time comparison for password check GHSA-mfvx-7rcj-9m5g (Nick Craig-Wood)
-  - serve restic: Fix path traversal above the served directory GHSA-45pq-889g-fcgh CVE-PENDING (Nick Craig-Wood)
+  - serve restic: Fix path traversal above the served directory GHSA-45pq-889g-fcgh CVE-2026-71309 (Nick Craig-Wood)
   - serve sftp: Don't crash the whole server on a bad request GHSA-6jcg-q3wp-x2f4 (Nick Craig-Wood)
-  - sftp: Fix command injection via crafted filenames on PowerShell remotes GHSA-2m8m-jhrm-w6j2 CVE-PENDING (Nick Craig-Wood)
+  - sftp: Fix command injection via crafted filenames on PowerShell remotes GHSA-2m8m-jhrm-w6j2 CVE-2026-71312 (Nick Craig-Wood)
   - vfs: Don't crash the process if a backend panics on a background goroutine GHSA-6jcg-q3wp-x2f4 (Nick Craig-Wood)
   - webdav
     - Fix HTTPS to HTTP redirects leaking credentials GHSA-h4mf-4v27-hggj (Nick Craig-Wood)
@@ -79925,6 +81215,89 @@ put them back in again. -->
 - Socialpranker <273312799+Socialpranker@users.noreply.github.com>
 - phatlc <phatle.hsd@gmail.com>
 - Punya Jain <4511945+punya10@users.noreply.github.com>
+- acoeur <7315110+forestrock@users.noreply.github.com>
+- SillyZir <269283839+SillyZir@users.noreply.github.com>
+- am-at-enrollvb <arthur.melton@enrollvb.com>
+- Loi Nguyen <vanloi999@gmail.com>
+- debaditya <82204129+DebadityaHait@users.noreply.github.com>
+- alliasgher <alliasgher123@gmail.com>
+- Anton Karpov <karpovantonme@gmail.com>
+- Edward Klesel <eklesel@bluecove.com>
+- Christian De Santis <41491267+christiandesantis@users.noreply.github.com>
+- Rodrigo Rodrigues <191260313+MVP0TAT0@users.noreply.github.com>
+- Recoordinate <296084221+latent-9@users.noreply.github.com>
+- Jiacheng Xu <169599847+Stardust0831@users.noreply.github.com>
+- Teddy Tennant <teddytennant@icloud.com>
+- Dean Chen <862469039@qq.com>
+- Pastalikek65 <Pastalikek65@users.noreply.github.com>
+- Morax <james20081204@gmail.com>
+- Shurong Cao <170531907+CAOShurong@users.noreply.github.com>
+- Dave <davixk83@gmail.com>
+- max <max@maxmax.ch>
+- Hakan İSMAİL <hakanismail53@gmail.com>
+- Shantanav Mukherjee <shantanav7@gmail.com>
+- VXNCXNX <VXNCXNX@users.noreply.github.com>
+- Rohit Behera <126186063+r0h1tb@users.noreply.github.com>
+- Rahman Yilmaz <85690773+Sudo-Rahman@users.noreply.github.com>
+- Sanjay Kanth A <sanjaykanthsk09@gmail.com>
+- machsix <28209092+machsix@users.noreply.github.com>
+- CAOShurong <3502119616@qq.com>
+- shaurya <shauryajaiswal.dev@gmail.com>
+- water <672684719@qq.com>
+- Rayan Salhab <r.salhab@aiyexpertsolutions.com>
+- Vijay Misal <misalvijay153@gmail.com>
+- Sune Mølgaard <sune@molgaard.org>
+- Anatoly Tarnavsky <anatolyt@gmail.com>
+- cyphercodes <cyphercodes@users.noreply.github.com>
+- shaurya <19599684+no-hup@users.noreply.github.com>
+- no-hup <shauryaj.finance@gmail.com>
+- Dhevenddra <dhevg20020402@gmail.com>
+- Splainte <r.wycke@hotmail.fr>
+- PSR94 <88868390+PSR94@users.noreply.github.com>
+- Shane McCarron <shane.mccarron@corvexconnect.com>
+- Dhevenddra K G <121691114+Dhevenddra@users.noreply.github.com>
+- Vaibhav Mashal <110161673+vaibhavmashal@users.noreply.github.com>
+- Murat Topcu <murat-topcu@outlook.com>
+- tomaszni <tomaszni@users.noreply.github.com>
+- eliotee <17210244+eliotee@users.noreply.github.com>
+- Aditya <f20220497@goa.bits-pilani.ac.in>
+- Nicholas Velten <nikvelten@gmail.com>
+- youdie006 <xncb135@korea.ac.kr>
+- subomi <86053854+ubmids@users.noreply.github.com>
+- Can Arslan <138895927+mc2rcanarslan@users.noreply.github.com>
+- Can Arslan <carslan@viyaenv.com>
+- ZRHann <2829442630@qq.com>
+- enkvadrat <123565769+enkvadrat@users.noreply.github.com>
+- Vladimir Babin <vovababin@gmail.com>
+- Eugene <inbox@null.page>
+- Kunpeng Xie <68572236+pentaoa@users.noreply.github.com>
+- foecmke <221832573+foecmke@users.noreply.github.com>
+- Vasek Sraier <git@vakabus.cz>
+- Kalin Stoyanov <kalin.stoyanov@kiteworks.com>
+- NytePlus <nyte_plus@sjtu.edu.cn>
+- Jeremy Schoemaker <jeremy@shoemoney.com>
+- solunolab <solunolab@outlook.com>
+- Mattias Michaux <mattias.michaux@gmail.com>
+- jxj <xinjun.jiang@daocloud.io>
+- Harsh Raj Singhania <40535627+HarshRajSinghania@users.noreply.github.com>
+- Roland <vv22345@163.com>
+- interested.tortoise <interested.tortoise@proton.me>
+- hsdfat <118717478+hsdfat@users.noreply.github.com>
+- Dirk Petersen <dirkpetersen@users.noreply.github.com>
+- TastyHeadphones <76083688+TastyHeadphones@users.noreply.github.com>
+- Neil Cawse <8085959+neilcawse@users.noreply.github.com>
+- Lev Devaev <102860715+Exxxxpo@users.noreply.github.com>
+- GhostCoder6969 <ahmadbannout191999@gmail.com>
+- bounty-agent <bounty@example.com>
+- mygrexit <33792951+mygrexit@users.noreply.github.com>
+- Kaya <firat.kaya@mail.com>
+- somaz <genius5711@gmail.com>
+- xiaozou-wine <243062178+xiaozou-wine@users.noreply.github.com>
+- Roman Butor <rbutor@gmail.com>
+- kaii9 <107882135+kaii9@users.noreply.github.com>
+- Stochastic <138764723+Asthenia0412@users.noreply.github.com>
+- James Truitt <80006053+jtruitt1@users.noreply.github.com>
+- firatkaya <firat@netiket.com.tr>
 
 # Contact the rclone project
 
