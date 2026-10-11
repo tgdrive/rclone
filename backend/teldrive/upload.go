@@ -10,13 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rclone/rclone/backend/teldrive/api"
 	"github.com/rclone/rclone/backend/teldrive/tdhash"
 	"github.com/rclone/rclone/fs"
-	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/operations"
 	"github.com/rclone/rclone/lib/pool"
 	"github.com/rclone/rclone/lib/rest"
@@ -35,6 +35,11 @@ type uploadInfo struct {
 	fileName     string
 	dir          string
 	storedParts  map[int]storedPart
+	source       fs.ObjectInfo
+	blockMu      sync.Mutex
+	blockHashes  map[int][]byte
+	chunkSizes   map[int]int64
+	hashInvalid  bool
 }
 
 type objectChunkWriter struct {
@@ -47,7 +52,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		return 0, fmt.Errorf("invalid chunk number %d", chunkNumber)
 	}
 	var size int64
-	var checksum string
+	var blocks []byte
 	if w.uploadInfo.expectedSize >= 0 {
 		offset := int64(chunkNumber) * w.uploadInfo.chunkSize
 		if offset < 0 || offset >= w.uploadInfo.expectedSize {
@@ -66,17 +71,39 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		if _, err := reader.Seek(0, io.SeekStart); err != nil {
 			return 0, err
 		}
-		hasher := tdhash.New()
-		if _, err := io.CopyN(hasher, reader, size); err != nil {
-			return 0, err
-		}
-		checksum = hex.EncodeToString(hasher.Sum(nil))
-		if _, err := reader.Seek(0, io.SeekStart); err != nil {
-			return 0, err
-		}
 	}
 	if stored, ok := w.uploadInfo.storedParts[chunkNumber+1]; ok {
-		if stored.size == size && (checksum == "" || strings.EqualFold(stored.checksum, checksum)) {
+		matches := stored.size == size
+		if matches {
+			if w.o.fs.opt.HashEnabled || w.uploadInfo.expectedSize < 0 {
+				if w.uploadInfo.expectedSize >= 0 {
+					if delay, ok := reader.(interface{ DelayAccounting(int) }); ok {
+						delay.DelayAccounting(2)
+					}
+				}
+				hasher := tdhash.New().(interface {
+					io.Writer
+					BlockHashes() []byte
+				})
+				if _, err := reader.Seek(0, io.SeekStart); err != nil {
+					return 0, err
+				}
+				if _, err := io.CopyN(hasher, reader, size); err != nil {
+					return 0, err
+				}
+				blocks = hasher.BlockHashes()
+				if w.uploadInfo.expectedSize < 0 {
+					matches = strings.EqualFold(stored.checksum, hex.EncodeToString(tdhash.SumBlockHashes(blocks)))
+				}
+				if _, err := reader.Seek(0, io.SeekStart); err != nil {
+					return 0, err
+				}
+				if w.o.fs.opt.HashEnabled {
+					w.uploadInfo.addBlockHashes(chunkNumber, int64(chunkNumber)*w.uploadInfo.chunkSize, size, blocks)
+				}
+			}
+		}
+		if matches {
 			if w.uploadInfo.expectedSize >= 0 {
 				switch r := reader.(type) {
 				case *operations.ReOpen:
@@ -94,14 +121,20 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 		}
 		return 0, resumeErr
 	}
-	if err := w.o.putUploadPart(ctx, w.uploadInfo, chunkNumber+1, reader, size, checksum); err != nil {
+	var err error
+	blocks, err = w.o.putUploadPart(ctx, w.uploadInfo, chunkNumber+1, reader, size)
+	if err != nil {
 		return 0, err
 	}
+	w.uploadInfo.addBlockHashes(chunkNumber, int64(chunkNumber)*w.uploadInfo.chunkSize, size, blocks)
 	return size, nil
 }
 
 func (w *objectChunkWriter) Close(ctx context.Context) error {
-	_, err := w.o.completeUpload(ctx, w.uploadInfo)
+	file, err := w.o.completeUpload(ctx, w.uploadInfo)
+	if err == nil {
+		err = w.uploadInfo.setSourceHash(ctx, file)
+	}
 	return err
 }
 
@@ -124,21 +157,12 @@ func (o *Object) prepareUpload(ctx context.Context, remote string, src fs.Object
 		ConflictPolicy:    "replace",
 		PreferredPartSize: int64(o.fs.opt.ChunkSize),
 	}
-	if o.fs.opt.HashEnabled {
-		value, hashErr := src.Hash(ctx, telDriveHash)
-		switch {
-		case hashErr == nil && value != "":
-			request.Hash = &api.FileHash{Algorithm: "blake3", Value: value}
-		case hashErr != nil && !errors.Is(hashErr, hash.ErrUnsupported):
-			return nil, fmt.Errorf("read source BLAKE3 hash: %w", hashErr)
-		}
-	}
-
 	resumed, err := o.findResumableUpload(ctx, request, leaf, directoryID)
 	if err != nil {
 		return nil, err
 	}
 	if resumed != nil {
+		resumed.source = src
 		fs.Debugf(o.fs, "Resuming TelDrive upload %s with %d stored parts", resumed.uploadID, len(resumed.storedParts))
 		return resumed, nil
 	}
@@ -158,7 +182,11 @@ func (o *Object) prepareUpload(ctx context.Context, remote string, src fs.Object
 	if err != nil {
 		return nil, err
 	}
-	return uploadInfoFromSession(session, leaf, directoryID, nil)
+	info, err := uploadInfoFromSession(session, leaf, directoryID, nil)
+	if err == nil {
+		info.source = src
+	}
+	return info, err
 }
 
 func (o *Object) findResumableUpload(ctx context.Context, request api.UploadCreateRequest, leaf, directoryID string) (*uploadInfo, error) {
@@ -238,18 +266,11 @@ func (o *Object) listUploadParts(ctx context.Context, uploadID string) ([]api.Up
 func uploadSessionMatches(session api.UploadSession, request api.UploadCreateRequest, now time.Time) bool {
 	return session.State == "open" &&
 		session.ID != "" && session.PartSize > 0 && session.ExpiresAt.After(now) &&
+		session.ExpectedHash == nil &&
 		session.ParentId == request.ParentId && session.Name == request.Name &&
 		session.ExpectedSize == request.Size && session.MimeType == request.MimeType &&
 		session.Encryption == request.Encryption && session.ConflictPolicy == request.ConflictPolicy &&
-		session.ModTime.UTC().Truncate(time.Microsecond).Equal(request.ModTime.UTC().Truncate(time.Microsecond)) &&
-		equalFileHash(session.ExpectedHash, request.Hash)
-}
-
-func equalFileHash(left, right *api.FileHash) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return left.Algorithm == right.Algorithm && left.Value == right.Value
+		session.ModTime.UTC().Truncate(time.Microsecond).Equal(request.ModTime.UTC().Truncate(time.Microsecond))
 }
 
 func compatibleStoredParts(session api.UploadSession, parts []api.UploadPart) (map[int]storedPart, bool) {
@@ -332,31 +353,45 @@ func (o *Object) uploadMultipart(ctx context.Context, remote string, in io.Reade
 			partSize = remaining
 		}
 		if _, ok := info.storedParts[int(partNo)]; ok {
-			if _, err := io.CopyN(io.Discard, in, partSize); err != nil {
+			var reader io.Reader = in
+			var hasher interface {
+				io.Writer
+				BlockHashes() []byte
+			}
+			if o.fs.opt.HashEnabled {
+				hasher = tdhash.New().(interface {
+					io.Writer
+					BlockHashes() []byte
+				})
+				reader = io.TeeReader(in, hasher)
+			}
+			if _, err := io.CopyN(io.Discard, reader, partSize); err != nil {
 				return nil, fmt.Errorf("skip stored upload part %d: %w", partNo, err)
+			}
+			if hasher != nil {
+				info.addBlockHashes(int(partNo-1), consumed, partSize, hasher.BlockHashes())
 			}
 			consumed += partSize
 			continue
 		}
-		if err := o.putUploadPart(ctx, info, int(partNo), io.LimitReader(in, partSize), partSize, ""); err != nil {
+		blocks, err := o.putUploadPart(ctx, info, int(partNo), io.LimitReader(in, partSize), partSize)
+		if err != nil {
 			return nil, err
 		}
+		info.addBlockHashes(int(partNo-1), consumed, partSize, blocks)
 		consumed += partSize
 	}
 	return info, nil
 }
 
-func (o *Object) putUploadPart(ctx context.Context, info *uploadInfo, partNo int, reader io.Reader, size int64, checksum string) error {
+func (o *Object) putUploadPart(ctx context.Context, info *uploadInfo, partNo int, reader io.Reader, size int64) ([]byte, error) {
 	if info == nil || info.uploadID == "" || partNo < 1 || size < 0 {
-		return fmt.Errorf("invalid TelDrive upload part")
+		return nil, fmt.Errorf("invalid TelDrive upload part")
 	}
 	path := fmt.Sprintf("/api/v1/uploads/%s/parts/%d", info.uploadID, partNo)
 	opts := rest.Opts{
 		Method: "PUT", Path: path, Body: reader, ContentLength: &size,
 		ContentType: "application/octet-stream",
-	}
-	if checksum != "" {
-		opts.ExtraHeaders = map[string]string{"X-Part-Checksum": checksum}
 	}
 	if o.fs.opt.UploadHost != "" {
 		opts.RootURL = strings.TrimRight(o.fs.opt.UploadHost, "/") + path
@@ -365,6 +400,18 @@ func (o *Object) putUploadPart(ctx context.Context, info *uploadInfo, partNo int
 	var resp *http.Response
 	var previousErr error
 	attempt := 0
+	var hasher interface {
+		io.Writer
+		Reset()
+		BlockHashes() []byte
+	}
+	if o.fs.opt.HashEnabled {
+		hasher = tdhash.New().(interface {
+			io.Writer
+			Reset()
+			BlockHashes() []byte
+		})
+	}
 	err := o.fs.pacer.Call(func() (bool, error) {
 		if attempt > 0 {
 			seeker, ok := reader.(io.Seeker)
@@ -375,16 +422,50 @@ func (o *Object) putUploadPart(ctx context.Context, info *uploadInfo, partNo int
 				return false, seekErr
 			}
 		}
+		var body io.Reader = io.LimitReader(reader, size)
+		if hasher != nil {
+			hasher.Reset()
+			body = io.TeeReader(body, hasher)
+		}
+		tracked := &uploadPartBody{reader: body}
+		opts.Body = tracked
 		attempt++
 		var callErr error
 		resp, callErr = o.fs.srv.Call(ctx, &opts)
+		// An existing part can be acknowledged without consuming the request body.
+		// lib/rest waits for the transport to close tracked before returning.
+		if callErr == nil {
+			var remaining int64
+			remaining, callErr = io.Copy(io.Discard, body)
+			if callErr == nil && tracked.n+remaining != size {
+				callErr = fmt.Errorf("upload part %d: read %d bytes, expected %d: %w", partNo, tracked.n+remaining, size, io.ErrUnexpectedEOF)
+			}
+		}
 		previousErr = callErr
 		return shouldRetry(ctx, resp, callErr)
 	})
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
-	return err
+	if err != nil || hasher == nil {
+		return nil, err
+	}
+	return hasher.BlockHashes(), nil
+}
+
+type uploadPartBody struct {
+	reader io.Reader
+	n      int64
+}
+
+func (body *uploadPartBody) Read(p []byte) (int, error) {
+	n, err := body.reader.Read(p)
+	body.n += int64(n)
+	return n, err
+}
+
+func (body *uploadPartBody) Close() error {
+	return nil
 }
 
 func (o *Object) completeUpload(ctx context.Context, info *uploadInfo) (*api.FileInfo, error) {
@@ -408,6 +489,68 @@ func (o *Object) completeUpload(ctx context.Context, info *uploadInfo) (*api.Fil
 	}
 	o.applyFileInfo(&file)
 	return &file, nil
+}
+
+func (info *uploadInfo) addBlockHashes(chunk int, offset, size int64, blocks []byte) {
+	if len(blocks) == 0 {
+		return
+	}
+	if offset%tdhash.BlockSize != 0 || (info.expectedSize >= 0 && offset+size < info.expectedSize && size%tdhash.BlockSize != 0) || len(blocks)%32 != 0 {
+		info.blockMu.Lock()
+		info.hashInvalid = true
+		info.blockMu.Unlock()
+		return
+	}
+	info.blockMu.Lock()
+	if info.blockHashes == nil {
+		info.blockHashes = make(map[int][]byte)
+	}
+	if info.chunkSizes == nil {
+		info.chunkSizes = make(map[int]int64)
+	}
+	info.blockHashes[chunk] = append([]byte(nil), blocks...)
+	info.chunkSizes[chunk] = size
+	info.blockMu.Unlock()
+}
+
+func (info *uploadInfo) setSourceHash(ctx context.Context, file *api.FileInfo) error {
+	if info == nil || info.source == nil || file == nil {
+		return nil
+	}
+	info.blockMu.Lock()
+	if info.hashInvalid || len(info.blockHashes) == 0 {
+		info.blockMu.Unlock()
+		return nil
+	}
+	if info.expectedSize >= 0 && int64(len(info.blockHashes)) != info.totalChunks {
+		info.blockMu.Unlock()
+		return errors.New("incomplete upload hashes")
+	}
+	var blocks []byte
+	var size int64
+	for chunk := 0; chunk < len(info.blockHashes); chunk++ {
+		hashes, ok := info.blockHashes[chunk]
+		partSize := info.chunkSizes[chunk]
+		if !ok || partSize <= 0 || int64(len(hashes)) != ((partSize-1)/tdhash.BlockSize+1)*32 {
+			info.blockMu.Unlock()
+			return errors.New("incomplete upload hashes")
+		}
+		size += partSize
+		blocks = append(blocks, hashes...)
+	}
+	info.blockMu.Unlock()
+	if size != file.Size || (info.expectedSize >= 0 && size != info.expectedSize) {
+		return errors.New("upload hash size does not match file size")
+	}
+	value := hex.EncodeToString(tdhash.SumBlockHashes(blocks))
+	serverValue := fileHashValue(file.Hash)
+	if serverValue != "" && !strings.EqualFold(value, serverValue) {
+		return fmt.Errorf("uploaded TelDrive BLAKE3 hash mismatch: source %q, server %q", value, serverValue)
+	}
+	if setter, ok := info.source.(fs.HashSetter); ok {
+		setter.SetHash(ctx, telDriveHash, value)
+	}
+	return nil
 }
 
 func (o *Object) abortUpload(ctx context.Context, info *uploadInfo) error {

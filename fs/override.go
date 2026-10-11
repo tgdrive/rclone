@@ -1,6 +1,10 @@
 package fs
 
-import "context"
+import (
+	"context"
+
+	"github.com/rclone/rclone/fs/hash"
+)
 
 // OverrideRemote is a wrapper to override the Remote for an
 // ObjectInfo
@@ -28,6 +32,13 @@ func NewOverrideRemote(oi ObjectInfo, remote string) *OverrideRemote {
 // Remote returns the overridden remote name
 func (o *OverrideRemote) Remote() string {
 	return o.remote
+}
+
+// SetHash stores a hash on the underlying object when it supports hash caching.
+func (o *OverrideRemote) SetHash(ctx context.Context, ty hash.Type, value string) {
+	if setter, ok := o.ObjectInfo.(HashSetter); ok {
+		setter.SetHash(ctx, ty, value)
+	}
 }
 
 // String returns the overridden remote name

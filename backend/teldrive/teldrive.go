@@ -822,6 +822,9 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if err != nil {
 		return err
 	}
+	if err := info.setSourceHash(ctx, file); err != nil {
+		return err
+	}
 	o.applyFileInfo(file)
 	return nil
 }
