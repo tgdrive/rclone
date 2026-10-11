@@ -1355,6 +1355,16 @@ func (o *Object) Hash(ctx context.Context, r hash.Type) (string, error) {
 	return hashValue, nil
 }
 
+// SetHash caches a hash calculated while reading this object.
+func (o *Object) SetHash(_ context.Context, ty hash.Type, value string) {
+	o.fs.objectMetaMu.Lock()
+	if o.hashes == nil {
+		o.hashes = make(map[hash.Type]string)
+	}
+	o.hashes[ty] = value
+	o.fs.objectMetaMu.Unlock()
+}
+
 // Size returns the size of an object in bytes
 func (o *Object) Size() int64 {
 	o.fs.objectMetaMu.RLock()

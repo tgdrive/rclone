@@ -112,6 +112,11 @@ type ObjectInfo interface {
 	Storable() bool
 }
 
+// HashSetter can cache a hash calculated while transferring an object.
+type HashSetter interface {
+	SetHash(ctx context.Context, ty hash.Type, value string)
+}
+
 // DirEntry provides read only information about the common subset of
 // a Dir or Object.  These are returned from directory listings - type
 // assert them into the correct type.

@@ -24,7 +24,8 @@ const (
 type digest struct {
 	chunkHash   hash.Hash // Hash for current block
 	totalHash   hash.Hash // Tree hash (hash of block hashes)
-	n           int64     // bytes written into current block
+	blockHashes []byte
+	n           int64 // bytes written into current block
 	sumCalled   bool
 	writtenMore bool
 }
@@ -41,6 +42,7 @@ func (d *digest) Reset() {
 	d.n = 0
 	d.sumCalled = false
 	d.writtenMore = false
+	d.blockHashes = nil
 
 	// Always use BLAKE3
 	d.chunkHash = blake3.New()
@@ -51,6 +53,7 @@ func (d *digest) Reset() {
 func (d *digest) writeChunkHash() {
 	chunkHashBytes := d.chunkHash.Sum(nil)
 	d.totalHash.Write(chunkHashBytes)
+	d.blockHashes = append(d.blockHashes, chunkHashBytes...)
 	// Reset chunk hasher for next chunk
 	d.n = 0
 	d.chunkHash.Reset()
@@ -113,6 +116,19 @@ func (d *digest) Size() int {
 // BlockSize returns the hash's underlying block size.
 func (d *digest) BlockSize() int {
 	return BlockSize
+}
+
+// BlockHashes returns the BLAKE3 digests of the data blocks written so far.
+func (d *digest) BlockHashes() []byte {
+	_ = d.Sum(nil)
+	return append([]byte(nil), d.blockHashes...)
+}
+
+// SumBlockHashes returns the tree hash for a concatenation of block hashes.
+func SumBlockHashes(blockHashes []byte) []byte {
+	h := blake3.New()
+	_, _ = h.Write(blockHashes)
+	return h.Sum(nil)
 }
 
 // SumString computes the tree hash of the entire file and returns it as a hex string
