@@ -92,6 +92,29 @@ func TestPutUploadPartHashesWhileSendingWithoutChecksumHeader(t *testing.T) {
 	assert.Equal(t, hasher.BlockHashes(), blocks)
 }
 
+func TestPutUploadPartChannelID(t *testing.T) {
+	var queries []string
+	var host string
+	o := newUploadTestObject(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/uploads/upload/parts/1", r.URL.Path)
+		_, _ = io.Copy(io.Discard, r.Body)
+		queries = append(queries, r.URL.RawQuery)
+		host = r.Host
+		w.WriteHeader(http.StatusCreated)
+	})
+	put := func() {
+		t.Helper()
+		_, err := o.putUploadPart(context.Background(), &uploadInfo{uploadID: "upload"}, 1, strings.NewReader("x"), 1)
+		require.NoError(t, err)
+	}
+	put()
+	o.fs.opt.ChannelID = 9002
+	put()
+	o.fs.opt.UploadHost = "http://" + host + "/"
+	put()
+	assert.Equal(t, []string{"", "channelId=9002", "channelId=9002"}, queries)
+}
+
 func TestUploadInfoCachesVerifiedSourceHash(t *testing.T) {
 	hasher := tdhash.New()
 	_, _ = io.WriteString(hasher, "small file")

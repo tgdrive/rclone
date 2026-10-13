@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -392,6 +393,9 @@ func (o *Object) putUploadPart(ctx context.Context, info *uploadInfo, partNo int
 	opts := rest.Opts{
 		Method: "PUT", Path: path, Body: reader, ContentLength: &size,
 		ContentType: "application/octet-stream",
+	}
+	if o.fs.opt.ChannelID != 0 {
+		opts.Parameters = url.Values{"channelId": {strconv.FormatInt(o.fs.opt.ChannelID, 10)}}
 	}
 	if o.fs.opt.UploadHost != "" {
 		opts.RootURL = strings.TrimRight(o.fs.opt.UploadHost, "/") + path

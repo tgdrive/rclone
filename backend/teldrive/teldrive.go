@@ -136,6 +136,21 @@ buffers one chunk in memory.
 `,
 			Advanced: true,
 		}, {
+			Name:    "channel_id",
+			Default: 0,
+			Help: `Telegram channel ID to store uploaded chunks in.
+
+When set, uploads go to this channel instead of the channel currently
+selected on the TelDrive server, without changing the selection for
+other clients. The channel must already be registered with your
+TelDrive account. Uploads fail rather than rolling over to another
+channel when this channel is full or unavailable.
+
+Leave at 0 to use the server's selected channel. Requires a TelDrive
+server that supports the channelId upload parameter.
+`,
+			Advanced: true,
+		}, {
 			Help: `Optional alternative URL for upload API calls.
 
 If set, upload chunk requests will be sent to this host instead of
@@ -185,6 +200,7 @@ type Options struct {
 	LinkPassword      string               `config:"link_password"`      // Password for public share links
 	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`         // Upload chunk size (auto-aligned to 16 MiB)
 	UploadConcurrency int                  `config:"upload_concurrency"` // Parallel upload streams per file
+	ChannelID         int64                `config:"channel_id"`         // Storage channel for uploads (0 = server selection)
 	EncryptFiles      bool                 `config:"encrypt_files"`      // Enable server-side encryption
 	PageSize          int64                `config:"page_size"`          // Directory listing page size
 	HashEnabled       bool                 `config:"hash_enabled"`       // Enable BLAKE3 tree hashing
