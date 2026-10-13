@@ -248,6 +248,27 @@ Properties:
 - Type:        int
 - Default:     4
 
+#### --teldrive-channel-id
+
+Telegram channel ID to store uploaded chunks in.
+
+When set, uploads go to this channel instead of the channel currently
+selected on the TelDrive server, without changing the selection for
+other clients. The channel must already be registered with your
+TelDrive account. Uploads fail rather than rolling over to another
+channel when this channel is full or unavailable.
+
+Leave at 0 to use the server's selected channel. Requires a TelDrive
+server that supports the channelId upload parameter.
+
+
+Properties:
+
+- Config:      channel_id
+- Env Var:     RCLONE_TELDRIVE_CHANNEL_ID
+- Type:        int
+- Default:     0
+
 #### --teldrive-encoding
 
 The encoding for the backend.
