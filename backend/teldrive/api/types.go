@@ -42,6 +42,7 @@ type MetadataRequestOptions struct {
 	Cursor string
 	Limit  int64
 	Status string
+	Scope  string
 }
 
 type FolderCreateRequest struct {
