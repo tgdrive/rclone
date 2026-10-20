@@ -117,7 +117,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 			return size, nil
 		}
 		resumeErr := fmt.Errorf("stored upload part %d does not match source", chunkNumber+1)
-		if abortErr := w.Abort(ctx); abortErr != nil {
+		if abortErr := w.o.abortUpload(ctx, w.uploadInfo); abortErr != nil {
 			return 0, errors.Join(resumeErr, fmt.Errorf("abort incompatible upload: %w", abortErr))
 		}
 		return 0, resumeErr
@@ -140,7 +140,7 @@ func (w *objectChunkWriter) Close(ctx context.Context) error {
 }
 
 func (w *objectChunkWriter) Abort(ctx context.Context) error {
-	return w.o.abortUpload(ctx, w.uploadInfo)
+	return nil
 }
 
 func (o *Object) prepareUpload(ctx context.Context, remote string, src fs.ObjectInfo) (*uploadInfo, error) {
