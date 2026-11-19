@@ -1,7 +1,4 @@
 ---
-# Create a GitHub Release with cross-compiled binaries when a tag is pushed.
-# Mirrors the official rclone build.yml matrix but publishes to a GitHub
-# Release instead of uploading to beta.rclone.org.
 name: release
 
 on:
@@ -14,187 +11,90 @@ permissions:
   packages: write
 
 jobs:
-  build:
-    name: ${{ matrix.job_name }}
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
     timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    strategy:
-      fail-fast: false
-      matrix:
-        job_name:
-          - linux
-          - mac_amd64
-          - mac_arm64
-          - windows
-
-        include:
-          - job_name: linux
-            os: ubuntu-latest
-            go: '~1.27.0'
-            gotags: cmount
-            cgo: "0"
-            build_flags: '-include "^(linux/amd64|linux/arm64|linux/arm-v7)"'
-
-          - job_name: mac_amd64
-            os: macos-latest
-            go: '~1.27.0'
-            gotags: cmount
-            build_flags: '-include "^darwin/amd64" -cgo'
-
-          - job_name: mac_arm64
-            os: macos-latest
-            go: '~1.27.0'
-            gotags: cmount
-            build_flags: '-include "^darwin/arm64" -cgo -macos-arch arm64 -cgo-cflags=-I/usr/local/include -cgo-ldflags=-L/usr/local/lib'
-
-          - job_name: windows
-            os: windows-latest
-            go: '~1.27.0'
-            gotags: cmount
-            cgo: '0'
-            build_flags: '-include "^(windows/amd64|windows/arm64)"'
-            build_args: '-buildmode exe'
-
-
-    runs-on: ${{ matrix.os }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Install Go
-        uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version: ${{ matrix.go }}
-          check-latest: true
+          go-version: '~1.27.0'
 
-      - name: Set environment variables
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: latest
+
+      - name: Set SDK directory
+        run: echo "RELEASE_SDK_DIR=$RUNNER_TEMP/release-sdk" >> "$GITHUB_ENV"
+
+      - name: Cache release SDKs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/release-sdk
+          key: release-sdk-${{ runner.os }}-macos26.1-winfsp-ada6de1-macfuse-e9c0433
+
+      - name: Prepare cross-compilation SDKs
         run: |
-          echo 'GOTAGS=${{ matrix.gotags }}' >> $GITHUB_ENV
-          echo 'BUILD_FLAGS=${{ matrix.build_flags }}' >> $GITHUB_ENV
-          echo 'BUILD_ARGS=${{ matrix.build_args }}' >> $GITHUB_ENV
-          if [[ "${{ matrix.goarch }}" != "" ]]; then echo 'GOARCH=${{ matrix.goarch }}' >> $GITHUB_ENV ; fi
-          if [[ "${{ matrix.cgo }}" != "" ]]; then echo 'CGO_ENABLED=${{ matrix.cgo }}' >> $GITHUB_ENV ; fi
+          set -euo pipefail
+          mkdir -p "$RELEASE_SDK_DIR"
+          if [[ ! -d "$RELEASE_SDK_DIR/winfsp" ]]; then
+            git init "$RELEASE_SDK_DIR/winfsp"
+            git -C "$RELEASE_SDK_DIR/winfsp" remote add origin https://github.com/winfsp/winfsp.git
+            git -C "$RELEASE_SDK_DIR/winfsp" fetch --depth 1 origin ada6de157df4fa99f5a866b6ac7af66918d6d838
+            git -C "$RELEASE_SDK_DIR/winfsp" checkout --detach FETCH_HEAD
+          fi
+          if [[ ! -d "$RELEASE_SDK_DIR/macfuse" ]]; then
+            git init "$RELEASE_SDK_DIR/macfuse"
+            git -C "$RELEASE_SDK_DIR/macfuse" remote add origin https://github.com/macfuse/library.git
+            git -C "$RELEASE_SDK_DIR/macfuse" fetch --depth 1 origin e9c0433a0ef4694802474c82f47ca024a572153b
+            git -C "$RELEASE_SDK_DIR/macfuse" checkout --detach FETCH_HEAD
+          fi
+          if [[ ! -d "$RELEASE_SDK_DIR/MacOSX26.1.sdk" ]]; then
+            archive="$RELEASE_SDK_DIR/MacOSX26.1.sdk.tar.xz"
+            curl --fail --location --retry 3 \
+              https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz \
+              --output "$archive"
+            echo "beee7212d265a6d2867d0236cc069314b38d5fb3486a6515734e76fa210c784c  $archive" | sha256sum --check
+            tar -xf "$archive" -C "$RELEASE_SDK_DIR"
+          fi
 
-      - name: Install Libraries on Linux
-        run: |
-          sudo modprobe fuse
-          sudo chmod 666 /dev/fuse
-          sudo chown root:$USER /etc/fuse.conf
-          sudo apt-get update
-          sudo apt-get install -y fuse3 libfuse-dev rpm pkg-config git-annex git-annex-remote-rclone nfs-common
-          sudo rm -f /usr/local/bin/fusermount /usr/local/bin/fusermount3
-        if: matrix.os == 'ubuntu-latest'
+      - name: Build and publish with GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: v2.20.1
+          args: release --clean --parallelism 3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Libraries on macOS
-        run: |
-          unset HOMEBREW_NO_INSTALL_FROM_API
-          brew untap --force homebrew/core
-          brew untap --force homebrew/cask
-          brew untap --force aws/tap
-          brew update
-          brew install --cask macfuse
-          brew install git-annex git-annex-remote-rclone
-        if: matrix.os == 'macos-latest'
-
-      - name: Install Libraries on Windows
-        shell: powershell
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          choco install -y winfsp zip
-          echo "CPATH=C:\Program Files\WinFsp\inc\fuse;C:\Program Files (x86)\WinFsp\inc\fuse" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          if ($env:GOARCH -eq "386") {
-            choco install -y mingw --forcex86 --force
-            echo "C:\\ProgramData\\chocolatey\\lib\\mingw\\tools\\install\\mingw32\\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
-          $path = (get-command mingw32-make.exe).Path
-          Copy-Item -Path $path -Destination (Join-Path (Split-Path -Path $path) 'make.exe')
-        if: matrix.os == 'windows-latest'
-
-      - name: Print Go version and environment
-        run: |
-          printf "Using go at: $(which go)\n"
-          printf "Go version: $(go version)\n"
-          printf "\n\nGo environment:\n\n"
-          go env
-          printf "\n\nRclone environment:\n\n"
-          make vars
-
-      - name: Build rclone
-        run: |
-          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then make release_dep_linux ; fi
-          eval "go run bin/cross-compile.go -release current $BUILD_FLAGS -tags \"$GOTAGS\" $BUILD_ARGS ${{ github.ref_name }}"
-
-      - name: Upload release artifacts
+      - name: Upload Linux release archives for Docker
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.job_name }}-artifacts
-          path: build/
+          name: linux-artifacts
+          path: dist/rclone-*-linux-*.zip
           retention-days: 1
-
-  release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: /tmp/artifacts
-          merge-multiple: true
-
-      - name: Generate checksums
-        run: |
-          cd /tmp/artifacts
-          for f in *.zip *.tar.gz; do
-            [ -f "$f" ] && sha256sum "$f" > "$f.sha256"
-          done
-          cat *.sha256 | sort -k2 > checksums.txt
-
-      - name: Create and publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p build
-          cp -r /tmp/artifacts/* build/
-          cp bin/upload-github /tmp/upload-github
-          sed -i 's|REPO="rclone/rclone"|REPO="${{ github.repository }}"|' /tmp/upload-github
-          bash /tmp/upload-github "${{ github.ref_name }}"
 
   docker:
     name: Build and push Docker images
-    needs: build
+    needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Download release artifacts
+      - name: Download Linux release archives
         uses: actions/download-artifact@v8
         with:
-          path: /tmp/artifacts
-          merge-multiple: true
+          name: linux-artifacts
+          path: build
 
-      - name: Stage Linux release zips for Docker build context
-        run: |
-          mkdir -p build
-          cp /tmp/artifacts/rclone-*-linux-*.zip build/
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Docker meta
         id: meta
@@ -224,13 +124,13 @@ jobs:
 
       - name: Publish Docker Plugin
         run: |
-          VER=${GITHUB_REF_NAME}
-          PLUGIN_USER=ghcr.io/${{ github.repository_owner }}
-          for PLUGIN_ARCH in amd64 arm64 arm/v7 ;do
+          VER=$GITHUB_REF_NAME
+          PLUGIN_USER="ghcr.io/${{ github.repository_owner }}"
+          for PLUGIN_ARCH in amd64 arm64 arm/v7; do
               export PLUGIN_ARCH
               export PLUGIN_USER
-              make docker-plugin PLUGIN_TAG=${PLUGIN_ARCH/\//-}
-              make docker-plugin PLUGIN_TAG=${PLUGIN_ARCH/\//-}-${VER#v}
+              make docker-plugin PLUGIN_TAG="${PLUGIN_ARCH/\//-}"
+              make docker-plugin PLUGIN_TAG="${PLUGIN_ARCH/\//-}-${VER#v}"
           done
           make docker-plugin PLUGIN_ARCH=amd64 PLUGIN_TAG=latest
-          make docker-plugin PLUGIN_ARCH=amd64 PLUGIN_TAG=${VER#v}
+          make docker-plugin PLUGIN_ARCH=amd64 PLUGIN_TAG="${VER#v}"

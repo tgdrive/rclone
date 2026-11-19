@@ -1,0 +1,63 @@
+version: 2
+project_name: rclone
+
+builds:
+  - id: linux
+    binary: rclone
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64, arm]
+    goarm: ["7"]
+    ldflags:
+      - -s -w -X github.com/rclone/rclone/fs.Version={{ .Tag }}
+  - id: windows
+    binary: rclone
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64{{ else }}aarch64{{ end }}-windows-gnu -fno-sanitize=all -Wno-unused-command-line-argument
+      - CGO_CFLAGS=-I{{ .Env.RELEASE_SDK_DIR }}/winfsp/inc/fuse
+    goos: [windows]
+    goarch: [amd64, arm64]
+    tags: [cmount]
+    ldflags:
+      - -s -w -X github.com/rclone/rclone/fs.Version={{ .Tag }}
+  - id: darwin
+    binary: rclone
+    env:
+      - CGO_ENABLED=1
+      - >-
+        CC=zig cc -target {{ if eq .Arch "amd64" }}x86_64{{ else }}aarch64{{ end }}-macos
+        -isysroot {{ .Env.RELEASE_SDK_DIR }}/MacOSX26.1.sdk
+        -iwithsysroot /usr/include
+        -iframeworkwithsysroot /System/Library/Frameworks
+        -L{{ .Env.RELEASE_SDK_DIR }}/MacOSX26.1.sdk/usr/lib
+        -F{{ .Env.RELEASE_SDK_DIR }}/MacOSX26.1.sdk/System/Library/Frameworks
+        -fno-sanitize=all -Wno-unused-command-line-argument
+      - CGO_CFLAGS=-I{{ .Env.RELEASE_SDK_DIR }}/macfuse/include
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    tags: [cmount]
+    ldflags:
+      - -s -w -linkmode=internal -X github.com/rclone/rclone/fs.Version={{ .Tag }}
+
+archives:
+  - formats: [zip]
+    name_template: 'rclone-{{ .Tag }}-{{ .Os }}-{{ .Arch }}{{ with .Arm }}-v{{ . }}{{ end }}'
+    wrap_in_directory: true
+    files:
+      - README.md
+      - COPYING
+      - MANUAL.html
+      - MANUAL.txt
+      - rclone.1
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  disable: true
+
+release:
+  name_template: '{{ .Tag }}'
