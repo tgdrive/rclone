@@ -41,6 +41,8 @@ type uploadInfo struct {
 	blockHashes  map[int][]byte
 	chunkSizes   map[int]int64
 	hashInvalid  bool
+	verifyParts  bool
+	modTime      time.Time
 }
 
 type objectChunkWriter struct {
@@ -76,7 +78,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 	if stored, ok := w.uploadInfo.storedParts[chunkNumber+1]; ok {
 		matches := stored.size == size
 		if matches {
-			if w.o.fs.opt.HashEnabled || w.uploadInfo.expectedSize < 0 {
+			if w.o.fs.opt.HashEnabled || w.uploadInfo.expectedSize < 0 || w.uploadInfo.verifyParts {
 				if w.uploadInfo.expectedSize >= 0 {
 					if delay, ok := reader.(interface{ DelayAccounting(int) }); ok {
 						delay.DelayAccounting(2)
@@ -93,7 +95,7 @@ func (w *objectChunkWriter) WriteChunk(ctx context.Context, chunkNumber int, rea
 					return 0, err
 				}
 				blocks = hasher.BlockHashes()
-				if w.uploadInfo.expectedSize < 0 {
+				if w.uploadInfo.expectedSize < 0 || w.uploadInfo.verifyParts {
 					matches = strings.EqualFold(stored.checksum, hex.EncodeToString(tdhash.SumBlockHashes(blocks)))
 				}
 				if _, err := reader.Seek(0, io.SeekStart); err != nil {
@@ -164,6 +166,7 @@ func (o *Object) prepareUpload(ctx context.Context, remote string, src fs.Object
 	}
 	if resumed != nil {
 		resumed.source = src
+		resumed.modTime = request.ModTime
 		fs.Debugf(o.fs, "Resuming TelDrive upload %s with %d stored parts", resumed.uploadID, len(resumed.storedParts))
 		return resumed, nil
 	}
@@ -224,7 +227,25 @@ func (o *Object) findResumableUpload(ctx context.Context, request api.UploadCrea
 			if !ok {
 				continue
 			}
-			return uploadInfoFromSession(session, leaf, directoryID, stored)
+			verifyParts := !session.ModTime.UTC().Truncate(time.Microsecond).Equal(request.ModTime.UTC().Truncate(time.Microsecond))
+			// A different timestamp requires content verification before reusing parts.
+			if verifyParts {
+				for _, part := range stored {
+					checksum, err := hex.DecodeString(part.checksum)
+					if err != nil || len(checksum) != tdhash.Size/2 {
+						ok = false
+						break
+					}
+				}
+				if !ok {
+					continue
+				}
+			}
+			info, err := uploadInfoFromSession(session, leaf, directoryID, stored)
+			if err == nil {
+				info.verifyParts = verifyParts
+			}
+			return info, err
 		}
 		if page.NextCursor == "" {
 			return nil, nil
@@ -270,8 +291,7 @@ func uploadSessionMatches(session api.UploadSession, request api.UploadCreateReq
 		session.ExpectedHash == nil &&
 		session.ParentId == request.ParentId && session.Name == request.Name &&
 		session.ExpectedSize == request.Size && session.MimeType == request.MimeType &&
-		session.Encryption == request.Encryption && session.ConflictPolicy == request.ConflictPolicy &&
-		session.ModTime.UTC().Truncate(time.Microsecond).Equal(request.ModTime.UTC().Truncate(time.Microsecond))
+		session.Encryption == request.Encryption && session.ConflictPolicy == request.ConflictPolicy
 }
 
 func compatibleStoredParts(session api.UploadSession, parts []api.UploadPart) (map[int]storedPart, bool) {
@@ -353,13 +373,13 @@ func (o *Object) uploadMultipart(ctx context.Context, remote string, in io.Reade
 		if remaining := src.Size() - consumed; remaining < partSize {
 			partSize = remaining
 		}
-		if _, ok := info.storedParts[int(partNo)]; ok {
+		if stored, ok := info.storedParts[int(partNo)]; ok {
 			var reader io.Reader = in
 			var hasher interface {
 				io.Writer
 				BlockHashes() []byte
 			}
-			if o.fs.opt.HashEnabled {
+			if o.fs.opt.HashEnabled || info.verifyParts {
 				hasher = tdhash.New().(interface {
 					io.Writer
 					BlockHashes() []byte
@@ -370,7 +390,17 @@ func (o *Object) uploadMultipart(ctx context.Context, remote string, in io.Reade
 				return nil, fmt.Errorf("skip stored upload part %d: %w", partNo, err)
 			}
 			if hasher != nil {
-				info.addBlockHashes(int(partNo-1), consumed, partSize, hasher.BlockHashes())
+				blocks := hasher.BlockHashes()
+				if info.verifyParts && !strings.EqualFold(stored.checksum, hex.EncodeToString(tdhash.SumBlockHashes(blocks))) {
+					resumeErr := fmt.Errorf("stored upload part %d does not match source", partNo)
+					if abortErr := o.abortUpload(ctx, info); abortErr != nil {
+						return nil, errors.Join(resumeErr, fmt.Errorf("abort incompatible upload: %w", abortErr))
+					}
+					return nil, resumeErr
+				}
+				if o.fs.opt.HashEnabled {
+					info.addBlockHashes(int(partNo-1), consumed, partSize, blocks)
+				}
 			}
 			consumed += partSize
 			continue
@@ -446,6 +476,11 @@ func (o *Object) putUploadPart(ctx context.Context, info *uploadInfo, partNo int
 			}
 		}
 		previousErr = callErr
+		// A busy lease is temporary; other conflicts must not be retried blindly.
+		var apiErr *apiError
+		if ctx.Err() == nil && errors.As(callErr, &apiErr) && apiErr.StatusCode == http.StatusConflict && apiErr.Code == "upload_part_busy" {
+			return true, callErr
+		}
 		return shouldRetry(ctx, resp, callErr)
 	})
 	if resp != nil && resp.Body != nil {
@@ -492,6 +527,13 @@ func (o *Object) completeUpload(ctx context.Context, info *uploadInfo) (*api.Fil
 		return nil, err
 	}
 	o.applyFileInfo(&file)
+	// Resumed sessions can carry an older timestamp than the current source.
+	if !info.modTime.IsZero() && !o.modTime.UTC().Truncate(o.fs.Precision()).Equal(info.modTime.UTC().Truncate(o.fs.Precision())) {
+		if err := o.SetModTime(ctx, info.modTime); err != nil {
+			return nil, err
+		}
+		file.ModTime = o.modTime
+	}
 	return &file, nil
 }
 

@@ -160,6 +160,11 @@ traffic to a different server or CDN endpoint.
 			Name:      "upload_host",
 			Sensitive: true,
 		}, {
+			Name:     "no_pool",
+			Default:  false,
+			Help:     "Add d=1 to content requests to bypass the TelDrive download pool.",
+			Advanced: true,
+		}, {
 			Name:    "encrypt_files",
 			Default: false,
 			Help: `Enable native TelDrive encryption for stored files.
@@ -196,6 +201,7 @@ Disable only if the server does not support this hash type.
 type Options struct {
 	ApiHost           string               `config:"api_host"`           // URL of the TelDrive API server
 	UploadHost        string               `config:"upload_host"`        // Optional alternative host for uploads
+	NoPool            bool                 `config:"no_pool"`            // Bypass the download pool for content requests
 	APIKey            string               `config:"api_key"`            // API authentication token
 	LinkPassword      string               `config:"link_password"`      // Password for public share links
 	ChunkSize         fs.SizeSuffix        `config:"chunk_size"`         // Upload chunk size (auto-aligned to 16 MiB)
@@ -370,11 +376,6 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 
 	// Align chunk size to 16MB multiple for optimal BLAKE3 tree hashing
 	opt.ChunkSize = alignChunkSize(opt.ChunkSize)
-	if opt.PageSize < 1 {
-		opt.PageSize = 100
-	} else if opt.PageSize > 200 {
-		opt.PageSize = 200
-	}
 
 	f := &Fs{
 		name:  name,
@@ -1386,8 +1387,11 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 	opts := rest.Opts{
 		Method:  "GET",
-		Path:    fmt.Sprintf("/api/v1/files/%s/content", o.id),
+		Path:    fmt.Sprintf("/api/v1/files/%s/content/%s", o.id, url.PathEscape(o.name)),
 		Options: options,
+	}
+	if o.fs.opt.NoPool {
+		opts.Parameters = url.Values{"d": {"1"}}
 	}
 
 	err = o.fs.pacer.Call(func() (bool, error) {
