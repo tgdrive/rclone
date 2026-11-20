@@ -342,7 +342,7 @@ jobs:
         run: govulncheck ./...
 
       - name: Check Markdown format
-        uses: DavidAnson/markdownlint-cli2-action@v20
+        uses: DavidAnson/markdownlint-cli2-action@v25
         with:
           globs: |
             CONTRIBUTING.md
