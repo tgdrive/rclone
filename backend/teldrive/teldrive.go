@@ -162,7 +162,7 @@ traffic to a different server or CDN endpoint.
 		}, {
 			Name:     "no_pool",
 			Default:  false,
-			Help:     "Add d=1 to content requests to bypass the TelDrive download pool.",
+			Help:     "Add download=1 to content requests to bypass the TelDrive download pool and disk cache.",
 			Advanced: true,
 		}, {
 			Name:    "encrypt_files",
@@ -1391,7 +1391,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		Options: options,
 	}
 	if o.fs.opt.NoPool {
-		opts.Parameters = url.Values{"d": {"1"}}
+		opts.Parameters = url.Values{"download": {"1"}}
 	}
 
 	err = o.fs.pacer.Call(func() (bool, error) {
