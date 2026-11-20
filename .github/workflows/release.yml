@@ -32,7 +32,7 @@ jobs:
         run: echo "RELEASE_SDK_DIR=$RUNNER_TEMP/release-sdk" >> "$GITHUB_ENV"
 
       - name: Cache release SDKs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/release-sdk
           key: release-sdk-${{ runner.os }}-macos26.1-winfsp-ada6de1-macfuse-e9c0433
